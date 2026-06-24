@@ -438,6 +438,72 @@ def select_relevant_text(text: str, gemini_limit: int = 60000) -> str:
     return head + "\n\n[...ARA KISIM ATLANDI...]\n\n" + section14
 
 
+def call_openai_compatible(text: str, api_key: str, model: str, base_url: str,
+                            char_limit: int = 30000, max_retries: int = 4) -> dict:
+    """OpenAI-uyumlu sohbet API'ları için ortak çağrı (Groq, OpenAI, vb.).
+    Groq endpoint'i: https://api.groq.com/openai/v1
+    Geçici hatalarda (429/500/503) Retry-After'a göre bekleyip tekrar dener."""
+    url = f"{base_url.rstrip('/')}/chat/completions"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "Sen bir MSDS/SDS belge analiz uzmanısın. SADECE geçerli JSON döndür."},
+            {"role": "user", "content": OLLAMA_PROMPT.format(text=select_relevant_text(text, gemini_limit=char_limit))},
+        ],
+        "temperature": 0.1,
+        "response_format": {"type": "json_object"},
+    }
+    last_err = None
+    for attempt in range(max_retries):
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=120)
+            if resp.status_code == 429:
+                # Günlük mü dakikalık mı? Retry-After header'ına bak
+                retry_after = resp.headers.get("retry-after") or resp.headers.get("Retry-After")
+                body = resp.text
+                if _is_daily_quota_exhausted(body) or "RPD" in body or "per day" in body.lower():
+                    raise RuntimeError("DAILY_QUOTA_EXHAUSTED: " + body[:300])
+                wait = 0.0
+                if retry_after:
+                    try:
+                        wait = min(60.0, float(retry_after) + 1)
+                    except ValueError:
+                        wait = 0.0
+                if not wait:
+                    wait = _parse_retry_delay(body) or (3 * (attempt + 1))
+                if attempt < max_retries - 1:
+                    time.sleep(wait)
+                    continue
+                raise RuntimeError("RATE_LIMIT: " + body[:300])
+            resp.raise_for_status()
+            content = resp.json()["choices"][0]["message"]["content"]
+            content = re.sub(r"```json|```", "", content).strip()
+            return json.loads(content)
+        except json.JSONDecodeError:
+            raise
+        except RuntimeError:
+            raise
+        except Exception as e:
+            last_err = e
+            msg = str(e)
+            transient = any(c in msg for c in ["500", "502", "503", "504", "timeout", "Timeout"])
+            if transient and attempt < max_retries - 1:
+                time.sleep(3 * (attempt + 1))
+                continue
+            raise
+    raise last_err
+
+
+def call_groq(text: str, api_key: str, model: str = "llama-3.1-8b-instant", max_retries: int = 4) -> dict:
+    """Groq API (OpenAI-uyumlu, çok hızlı, cömert ücretsiz katman)."""
+    if not api_key:
+        raise RuntimeError("Groq API anahtarı girilmemiş.")
+    return call_openai_compatible(text, api_key, model,
+                                  base_url="https://api.groq.com/openai/v1",
+                                  char_limit=28000, max_retries=max_retries)
+
+
 def call_ollama(text: str, model: str, base_url: str) -> dict:
     payload = {
         "model": model,
@@ -587,10 +653,28 @@ def infer_pictograms_from_text(data: dict) -> list:
     return sorted(found)
 
 
-def call_ai(text: str, engine: str, model: str, ollama_url: str = "", gemini_api_key: str = "") -> dict:
+# Motor failover zinciri — kapasiteye göre sıralı (yüksekten düşüğe).
+# Her motor için: anahtar gerektirir mi, insan-okur etiket.
+ENGINE_LABELS = {
+    "groq": "⚡ Groq",
+    "gemini": "☁️ Gemini",
+    "ollama": "🖥️ Ollama (yerel)",
+    "openai": "🤖 OpenAI",
+}
+# Failover sırası: en yüksek günlük kapasiteden en düşüğe / yerele.
+FAILOVER_ORDER = ["groq", "gemini", "openai", "ollama"]
+
+
+def call_ai(text: str, engine: str, model: str, ollama_url: str = "",
+            gemini_api_key: str = "", groq_api_key: str = "", openai_api_key: str = "") -> dict:
     """Seçili AI motoruna göre tek bir çağrı noktası."""
     if engine == "gemini":
         data = call_gemini(text, gemini_api_key, model)
+    elif engine == "groq":
+        data = call_groq(text, groq_api_key, model)
+    elif engine == "openai":
+        data = call_openai_compatible(text, openai_api_key, model,
+                                      base_url="https://api.openai.com/v1")
     else:
         data = call_ollama(text, model, ollama_url)
 
@@ -605,6 +689,52 @@ def call_ai(text: str, engine: str, model: str, ollama_url: str = "", gemini_api
         pass
 
     return data
+
+
+def _is_quota_or_ratelimit_error(err: Exception) -> bool:
+    """Hatanın kota/rate-limit kaynaklı olup olmadığını (failover tetikleyici) anlar."""
+    msg = str(err).upper()
+    return any(k in msg for k in ["DAILY_QUOTA_EXHAUSTED", "RATE_LIMIT", "RESOURCE_EXHAUSTED",
+                                  "429", "QUOTA", "GÜNLÜK ÜCRETSIZ LIMIT", "RPD"])
+
+
+def analyze_with_failover(text, chain, models, keys, ollama_url, exhausted, on_switch=None):
+    """Metni zincirdeki (chain) motorlarla sırayla dener. Bir motor kota/limit yiyince
+    o motoru 'exhausted' kümesine ekler ve sıradaki motorla devam eder.
+    - chain: denenecek motor sırası, örn. ["groq","gemini","ollama"]
+    - models: {engine: model_adı}
+    - keys: {"gemini":..., "groq":..., "openai":...}
+    - exhausted: bu oturumda kotası dolmuş motorların kümesi (set) — paylaşımlı, güncellenir
+    - on_switch(eng): bir motora geçilince çağrılan bilgi callback'i
+    Döner: (data, kullanılan_engine). Hepsi tükenirse son hatayı yükseltir."""
+    last_err = None
+    for eng in chain:
+        if eng in exhausted:
+            continue
+        try:
+            if on_switch:
+                on_switch(eng)
+            data = call_ai(
+                text, eng, models.get(eng, ""),
+                ollama_url=ollama_url,
+                gemini_api_key=keys.get("gemini", ""),
+                groq_api_key=keys.get("groq", ""),
+                openai_api_key=keys.get("openai", ""),
+            )
+            return data, eng
+        except Exception as e:
+            last_err = e
+            if _is_quota_or_ratelimit_error(e):
+                # Bu motorun kotası doldu → bu oturumda bir daha deneme, sıradakine geç
+                exhausted.add(eng)
+                continue
+            else:
+                # Kota dışı hata (bozuk PDF, ağ vb.) → bu motorda bırak, üst katman ele alsın
+                raise
+    # Zincirdeki tüm motorlar tükendi
+    if last_err:
+        raise last_err
+    raise RuntimeError("Kullanılabilir AI motoru yok (anahtar girilmemiş olabilir).")
 
 
 def build_excel_summary(records: list) -> bytes:
@@ -797,25 +927,27 @@ def main():
 
         st.subheader("🤖 Yapay Zeka Motoru")
 
-        # Yerel (Ollama) gerçekten erişilebilir mi? Bulutta erişilemez → varsayılanı Gemini yap.
         _local_ok, _ = check_ollama("http://localhost:11434")
-        engine_options = ["🖥️ Yerel (Ollama) — ücretsiz, donanıma bağlı",
-                          "☁️ Online (Gemini API) — ücretsiz, hızlı"]
-        default_idx = 0 if _local_ok else 1
-        if not _local_ok:
-            st.caption("ℹ️ Yerel AI (Ollama) bu cihazda bulunamadı — Online (Gemini) önerilir.")
-        engine_label = st.radio(
-            "Motor seç", engine_options, index=default_idx,
-            label_visibility="collapsed",
-        )
-        engine = "gemini" if engine_label.startswith("☁️") else "ollama"
+        engine_options = [
+            "⚡ Groq — çok hızlı, yüksek ücretsiz limit",
+            "☁️ Gemini — Google, ücretsiz",
+            "🤖 OpenAI — ücretli",
+            "🖥️ Ollama (yerel) — sınırsız, donanıma bağlı",
+        ]
+        engine_keys = ["groq", "gemini", "openai", "ollama"]
+        default_idx = 3 if _local_ok else 0  # yerel varsa Ollama, yoksa Groq
+        engine_label = st.radio("Motor seç", engine_options, index=default_idx,
+                                label_visibility="collapsed")
+        engine = engine_keys[engine_options.index(engine_label)]
 
-        ollama_url, ollama_ok, model, gemini_api_key = "http://localhost:11434", False, "", ""
+        ollama_url = "http://localhost:11434"
+        model = ""
+        gemini_api_key = groq_api_key = openai_api_key = ""
+        ollama_ok = False
 
         if engine == "ollama":
             ollama_url = st.text_input("Ollama adresi", "http://localhost:11434")
             ollama_ok, models = check_ollama(ollama_url)
-
             if ollama_ok and models:
                 st.success(f"✓ Ollama aktif — {len(models)} model mevcut")
                 preferred = [m for m in models if any(x in m.lower()
@@ -823,74 +955,92 @@ def main():
                 model = st.selectbox("Model seç", preferred or models)
             elif ollama_ok:
                 st.warning("⚠ Ollama çalışıyor ama model yüklü değil")
-                model = st.text_input("Model adı", "mistral")
+                model = st.text_input("Model adı", "qwen2.5")
                 st.code("ollama pull qwen2.5")
             else:
                 st.error("✗ Ollama bulunamadı")
-                model = st.text_input("Model adı", "mistral")
+                model = st.text_input("Model adı", "qwen2.5")
                 with st.expander("📥 Kurulum"):
-                    st.markdown("""
-**1.** [ollama.ai](https://ollama.ai) → İndir ve kur
-**2.** Terminalde:
-```bash
-ollama pull qwen2.5
-ollama serve
-```
-**3.** Bu uygulamayı tekrar başlat""")
-        else:
+                    st.markdown("**1.** [ollama.ai](https://ollama.ai) → İndir ve kur\n\n"
+                                "**2.** Terminalde: `ollama pull qwen2.5` sonra `ollama serve`\n\n"
+                                "**3.** Bu uygulamayı tekrar başlat")
+
+        elif engine == "groq":
+            model = st.selectbox(
+                "Model",
+                ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"],
+                help="8B: en hızlı, günde ~14.400 istek (toplu işlem için ideal). "
+                     "70B: daha kaliteli, günde ~1.000 istek."
+            )
+            st.markdown('🔑 **Ücretsiz Groq anahtarı al** → [console.groq.com](https://console.groq.com/keys)')
+            groq_api_key = st.text_input("Groq API anahtarı", type="password",
+                                         placeholder="gsk_... (buraya yapıştır)",
+                                         help="Yalnızca bu oturumda kullanılır, kaydedilmez.")
+            with st.expander("ℹ️ Neden Groq?"):
+                st.markdown(
+                    "Groq ücretsiz katmanda **günde ~14.400 istek** verir (8B modelde) ve çok hızlıdır — "
+                    "toplu işlem için en uygun seçenek. Kredi kartı gerekmez. "
+                    "Anahtar: [console.groq.com/keys](https://console.groq.com/keys)"
+                )
+
+        elif engine == "openai":
+            model = st.selectbox("Model", ["gpt-4o-mini", "gpt-4o"],
+                                 help="gpt-4o-mini: ucuz ve yeterli. gpt-4o: daha kaliteli, pahalı.")
+            st.markdown('🔑 **OpenAI anahtarı** → [platform.openai.com](https://platform.openai.com/api-keys)')
+            openai_api_key = st.text_input("OpenAI API anahtarı", type="password",
+                                           placeholder="sk-... (buraya yapıştır)",
+                                           help="Yalnızca bu oturumda kullanılır. OpenAI ücretlidir.")
+            st.caption("⚠️ OpenAI ücretlidir (ücretsiz katman yok). Düşük maliyet için gpt-4o-mini önerilir.")
+
+        else:  # gemini
             if not GEMINI_SDK_OK:
                 st.error("✗ google-genai kurulu değil")
                 st.code("pip install google-genai")
-            model = st.selectbox(
-                "Model",
-                ["gemini-2.5-flash-lite", "gemini-2.5-flash"],
-                help="Flash-Lite: daha yüksek günlük ücretsiz limit (toplu işlem için önerilir). "
-                     "Flash: biraz daha kaliteli ama günlük limiti düşük."
-            )
-            if model == "gemini-2.5-flash":
-                st.caption("⚠️ Flash'ın günlük ücretsiz limiti düşük. Çok dosya için Flash-Lite'ı tercih edin.")
-
-            st.markdown(
-                '🔑 **Ücretsiz Gemini API anahtarı al** → '
-                '[aistudio.google.com/apikey](https://aistudio.google.com/apikey)',
-                unsafe_allow_html=False
-            )
-            gemini_api_key = st.text_input(
-                "Gemini API anahtarı", type="password",
-                placeholder="AIza... (buraya yapıştır)",
-                help="Anahtarınız yalnızca bu oturumda kullanılır, hiçbir yere kaydedilmez."
-            )
-
-            with st.expander("❓ Anahtarı nasıl alırım? (30 saniye)"):
+            model = st.selectbox("Model", ["gemini-2.5-flash-lite", "gemini-2.5-flash"],
+                                 help="Flash-Lite: daha yüksek günlük limit. Flash: daha kaliteli ama düşük limit.")
+            st.markdown('🔑 **Ücretsiz Gemini anahtarı** → [aistudio.google.com/apikey](https://aistudio.google.com/apikey)')
+            gemini_api_key = st.text_input("Gemini API anahtarı", type="password",
+                                           placeholder="AIza... (buraya yapıştır)",
+                                           help="Yalnızca bu oturumda kullanılır, kaydedilmez.")
+            with st.expander("ℹ️ Gemini ücretsiz limit — ÖNEMLİ"):
                 st.markdown(
-                    "1. [aistudio.google.com/apikey](https://aistudio.google.com/apikey) adresine git\n"
-                    "2. Google hesabınla giriş yap (kredi kartı gerekmez)\n"
-                    "3. **\"Create API key\"** butonuna tıkla\n"
-                    "4. Oluşan `AIza...` ile başlayan anahtarı kopyala\n"
-                    "5. Yukarıdaki kutuya yapıştır — hepsi bu!"
+                    "Gemini ücretsiz katman sınırı hesaba göre çok düşük olabilir (bazı hesaplarda günde "
+                    "birkaç istek). Çok dosya için **Groq** (günde ~14.400) veya **Ollama** (sınırsız) önerilir. "
+                    "Faturalandırma açarsanız limit 30x artar (MSDS başı ~1 kuruş)."
                 )
 
-            with st.expander("ℹ️ Ücretsiz kullanım sınırları ve gizlilik"):
-                st.markdown(
-                    "- Flash modelinde günlük ~1.500 istek (≈1.500 PDF/gün)\n"
-                    "- Dakikada ~10-15 istek — uygulama otomatik aralık koyar\n"
-                    "- **Gizlilik:** Ücretsiz katmanda gönderilen içerik Google tarafından "
-                    "model eğitiminde kullanılabilir. Gizli/hassas MSDS verisi için "
-                    "uygulamayı bilgisayarınızda yerel (Ollama) modunda çalıştırın.\n"
-                    "- Güncel limitler: ai.google.dev/gemini-api/docs/rate-limits"
-                )
+        # ── Failover (otomatik motor geçişi) için TÜM anahtarlar ──
+        with st.expander("🔁 Otomatik yedekleme (failover) — toplu işlem için önerilir"):
+            st.caption(
+                "Toplu işlemde bir motorun kotası dolduğunda, kalan dosyalar **otomatik olarak** "
+                "sıradaki motorla devam eder (Groq → Gemini → OpenAI → Ollama). Kesintisiz çalışması "
+                "için kullanacağınız motorların anahtarlarını buraya girin. Boş bıraktıklarınız atlanır."
+            )
+            fo_on = st.checkbox("Otomatik yedeklemeyi aç", value=True)
+            if fo_on:
+                if not groq_api_key:
+                    groq_api_key = st.text_input("⚡ Groq anahtarı (yedek)", type="password",
+                                                 placeholder="gsk_...", key="fo_groq")
+                if not gemini_api_key:
+                    gemini_api_key = st.text_input("☁️ Gemini anahtarı (yedek)", type="password",
+                                                   placeholder="AIza...", key="fo_gemini")
+                if not openai_api_key:
+                    openai_api_key = st.text_input("🤖 OpenAI anahtarı (yedek)", type="password",
+                                                   placeholder="sk-...", key="fo_openai")
 
-            # Kullanıcı anahtar girmediyse ve sahibi ortak bir anahtarı Secrets'a koyduysa onu kullan (opsiyonel)
-            if not gemini_api_key:
-                try:
-                    shared_key = st.secrets.get("GEMINI_API_KEY", "")
-                except Exception:
-                    shared_key = ""
-                if shared_key:
-                    gemini_api_key = shared_key
-                    st.caption("ℹ️ Ortak anahtar kullanılıyor.")
-
-            ollama_ok = bool(gemini_api_key) and GEMINI_SDK_OK
+        # Ortak anahtarlar (sahibi Secrets'a koyduysa)
+        for sk_name, var in [("GEMINI_API_KEY", "gemini"), ("GROQ_API_KEY", "groq"), ("OPENAI_API_KEY", "openai")]:
+            try:
+                val = st.secrets.get(sk_name, "")
+            except Exception:
+                val = ""
+            if val:
+                if var == "gemini" and not gemini_api_key:
+                    gemini_api_key = val
+                elif var == "groq" and not groq_api_key:
+                    groq_api_key = val
+                elif var == "openai" and not openai_api_key:
+                    openai_api_key = val
 
         st.divider()
         st.subheader("🏢 Kurumsal Şablon")
@@ -900,7 +1050,7 @@ ollama serve
         co_color = st.color_picker("Tema rengi", "#1a237e")
 
         st.divider()
-        st.caption("⚗️ MSDS Özetleyici v1.1\nOllama + Gemini · Toplu işlem · Excel")
+        st.caption("⚗️ MSDS Özetleyici v1.2\nGroq + Gemini + OpenAI + Ollama · Otomatik yedekleme · Toplu işlem")
 
     company = {"name": co_name, "dept": co_dept, "color": co_color, "logo": None}
     if co_logo:
@@ -908,7 +1058,41 @@ ollama serve
         b64 = base64.b64encode(raw_bytes).decode()
         company["logo"] = f"data:{co_logo.type};base64,{b64}"
 
-    ready = ollama_ok  # her iki motor için de "hazır mı" bayrağı bu isimde tutuluyor
+    # Motorların anahtar/erişim durumunu topla (failover için)
+    engine_keys_map = {
+        "groq": groq_api_key,
+        "gemini": gemini_api_key,
+        "openai": openai_api_key,
+        "ollama": "local" if ollama_ok else "",
+    }
+
+    def engine_available(eng: str) -> bool:
+        if eng == "ollama":
+            return ollama_ok
+        if eng == "gemini":
+            return bool(gemini_api_key) and GEMINI_SDK_OK
+        return bool(engine_keys_map.get(eng))
+
+    # Failover zinciri: seçili motor önce, sonra kapasiteye göre diğer KULLANILABİLİR motorlar
+    def build_failover_chain(primary: str) -> list:
+        chain = [primary] if engine_available(primary) else []
+        for eng in FAILOVER_ORDER:
+            if eng != primary and engine_available(eng) and eng not in chain:
+                chain.append(eng)
+        return chain
+
+    # Her motor için varsayılan model (failover sırasında o motora geçildiğinde kullanılır)
+    default_models = {
+        "groq": "llama-3.1-8b-instant",
+        "gemini": "gemini-2.5-flash-lite",
+        "openai": "gpt-4o-mini",
+        "ollama": model if engine == "ollama" else "qwen2.5",
+    }
+    # Seçili motorun modelini onun varsayılanına yaz (kullanıcı ne seçtiyse)
+    default_models[engine] = model
+
+    # Seçili motor hazır mı?
+    ready = engine_available(engine)
 
     # ── ANA ALAN ──
     st.title("⚗️ MSDS / SDS Özetleyici")
@@ -959,8 +1143,15 @@ ollama serve
                             f"☁️ {model} analiz ediyor… Bu genelde 5–10 saniye sürer")
                 with st.spinner(wait_msg):
                     try:
-                        result = call_ai(pdf_text, engine, model,
-                                          ollama_url=ollama_url, gemini_api_key=gemini_api_key)
+                        _chain = build_failover_chain(engine)
+                        _keys = {"gemini": gemini_api_key, "groq": groq_api_key, "openai": openai_api_key}
+                        _exhausted = set()
+                        result, _used = analyze_with_failover(
+                            pdf_text, _chain, default_models, _keys, ollama_url, _exhausted
+                        )
+                        if _used != engine:
+                            st.info(f"ℹ️ {ENGINE_LABELS.get(engine, engine)} kullanılamadı — "
+                                    f"{ENGINE_LABELS.get(_used, _used)} ile analiz edildi.")
                     except requests.exceptions.Timeout:
                         st.error("⏱ Zaman aşımı. Daha küçük bir model deneyin (llama3.2).")
                         return
@@ -1019,19 +1210,20 @@ ollama serve
             "Yüzlerce PDF'i tek seferde sıraya koyup işleyebilirsin. "
             "Bittiğinde tek bir **Excel özeti** ve istersen tüm **HTML/JSON kartlarının ZIP'i** olarak indirebilirsin."
         )
-        if engine == "gemini":
-            st.caption("☁️ Online motor seçili — istekler arasına otomatik bekleme eklenir "
-                       "(ücretsiz katman dakikalık limiti için).")
-            st.warning(
-                "ℹ️ **Gemini ücretsiz katman günlük limitlidir.** Modele göre günde sınırlı sayıda dosya "
-                "işleyebilirsiniz (Flash-Lite, Flash'tan daha yüksek limit verir). Limit dolarsa Pasifik "
-                "saatiyle gece yarısı sıfırlanır. **Çok sayıda dosyanız varsa** ya gruplar halinde işleyin, "
-                "ya da limitsiz olan yerel **Ollama** motorunu kullanın.",
-                icon="⚠️"
-            )
+        # Aktif failover zincirini göster
+        _chain_preview = build_failover_chain(engine)
+        if _chain_preview:
+            chain_str = " → ".join(ENGINE_LABELS.get(e, e) for e in _chain_preview)
+            st.success(f"🔁 **Otomatik yedekleme aktif:** {chain_str}\n\n"
+                       "Bir motorun kotası dolduğunda kalan dosyalar kaldığı yerden **sıradaki motorla** "
+                       "kesintisiz devam eder. İşiniz baştan başlamaz.")
         else:
-            st.caption("🖥️ Yerel motor seçili — yüzlerce dosyada toplam süre donanımınıza göre saatler sürebilir, "
-                       "ama günlük istek limiti YOKTUR. Daha hızlı sonuç için sol panelden Gemini'ye geçebilirsiniz.")
+            st.warning("⚠️ Hiçbir AI motoru hazır değil. Sol panelden en az bir motor seçip anahtar girin "
+                       "(veya Ollama kurun).")
+
+        if engine == "ollama" and len(_chain_preview) == 1:
+            st.caption("🖥️ Yalnızca yerel Ollama aktif — günlük limit YOKTUR ama hız donanımınıza bağlıdır. "
+                       "Daha hızlı + yedekli çalışma için sol panelden Groq/Gemini anahtarı da girebilirsiniz.")
 
         batch_files = st.file_uploader(
             "MSDS/SDS PDF dosyalarını seçin (çoklu seçim)",
@@ -1051,46 +1243,73 @@ ollama serve
             if start_batch and ready:
                 progress = st.progress(0.0)
                 status = st.empty()
+                switch_note = st.empty()
                 results = []
                 total = len(batch_files)
 
-                daily_quota_hit = False
+                # Failover zinciri ve paylaşımlı durum
+                chain = build_failover_chain(engine)
+                exhausted = set()           # bu oturumda kotası dolan motorlar
+                keys = {"gemini": gemini_api_key, "groq": groq_api_key, "openai": openai_api_key}
+                current_engine = {"val": chain[0] if chain else engine}
+
+                def _on_switch(eng):
+                    # Aktif motor değiştiyse kullanıcıya bilgi ver
+                    if eng != current_engine["val"]:
+                        prev = ENGINE_LABELS.get(current_engine["val"], current_engine["val"])
+                        now = ENGINE_LABELS.get(eng, eng)
+                        switch_note.info(f"ℹ️ {prev} kotası doldu — kalan dosyalar **{now}** ile sürdürülüyor.")
+                        current_engine["val"] = eng
+
                 for idx, f in enumerate(batch_files):
-                    status.write(f"İşleniyor: **{f.name}** ({idx + 1}/{total})")
+                    active_label = ENGINE_LABELS.get(current_engine["val"], current_engine["val"])
+                    status.write(f"İşleniyor: **{f.name}** ({idx + 1}/{total}) · Motor: {active_label}")
                     raw_bytes = f.read()
                     record = {"filename": f.name, "_bytes": raw_bytes}
+
+                    # Zincirde hâlâ kullanılabilir motor var mı?
+                    live_chain = [e for e in chain if e not in exhausted]
+                    if not live_chain:
+                        record["error"] = "Tüm AI motorlarının kotası doldu — sonra tekrar deneyin veya Ollama kullanın."
+                        results.append(record)
+                        progress.progress((idx + 1) / total)
+                        # Kalanları da işaretle
+                        for rem in batch_files[idx + 1:]:
+                            rb = rem.read() if hasattr(rem, "read") else b""
+                            results.append({"filename": rem.name, "_bytes": rb,
+                                            "error": "Tüm motorların kotası dolduğu için işlenmedi."})
+                        break
+
                     try:
                         pdf_text = extract_pdf_text(raw_bytes)
                         if len(pdf_text) < 100:
                             record["error"] = "Metin çıkarılamadı (taranmış/görsel PDF olabilir)"
                         else:
-                            data = call_ai(pdf_text, engine, model,
-                                            ollama_url=ollama_url, gemini_api_key=gemini_api_key)
+                            data, used_eng = analyze_with_failover(
+                                pdf_text, live_chain, default_models, keys,
+                                ollama_url, exhausted, on_switch=_on_switch
+                            )
                             record["data"] = data
+                            record["engine"] = used_eng
                             record["html"] = generate_html_card(data, company, f.name)
                     except Exception as e:
                         record["error"] = str(e)
-                        # Günlük ücretsiz kota bittiyse kalan dosyalar da aynı hatayı alır → erken dur
-                        if "GÜNLÜK ücretsiz limit" in str(e):
-                            daily_quota_hit = True
 
                     results.append(record)
                     progress.progress((idx + 1) / total)
 
-                    if daily_quota_hit:
-                        # Kalan dosyaları "işlenmedi" olarak işaretle
-                        for rem in batch_files[idx + 1:]:
-                            rem_bytes = rem.read() if hasattr(rem, "read") else b""
-                            results.append({"filename": rem.name, "_bytes": rem_bytes,
-                                            "error": "Günlük limit dolduğu için işlenmedi (sonra tekrar deneyin veya Flash-Lite/Ollama kullanın)"})
-                        break
-
-                    if engine == "gemini" and idx < total - 1:
-                        time.sleep(4.5)  # ücretsiz katman dakikalık limiti için güvenli tampon (~13 istek/dk)
+                    # Aktif motor bulut ise dakikalık limite takılmamak için kısa bekleme
+                    if current_engine["val"] in ("gemini", "groq", "openai") and idx < total - 1:
+                        time.sleep(2.5 if current_engine["val"] == "groq" else 4.5)
 
                 status.empty()
                 ok_count = sum(1 for r in results if "error" not in r)
                 err_count = total - ok_count
+                # Hangi motorların kullanıldığını özetle
+                used_engines = sorted({ENGINE_LABELS.get(r["engine"], r["engine"])
+                                       for r in results if r.get("engine")})
+                if used_engines:
+                    switch_note.caption("Kullanılan motorlar: " + ", ".join(used_engines))
                 if err_count:
                     st.warning(f"✓ {ok_count} başarılı, ✗ {err_count} hatalı — aşağıdan sadece hatalıları tekrar deneyebilirsiniz.")
                 else:
@@ -1122,24 +1341,33 @@ ollama serve
                              use_container_width=True):
                     rprog = st.progress(0.0)
                     rstatus = st.empty()
+                    rchain = build_failover_chain(engine)
+                    rexhausted = set()
+                    rkeys = {"gemini": gemini_api_key, "groq": groq_api_key, "openai": openai_api_key}
                     for n, i in enumerate(err_indices):
                         rec = results[i]
                         rstatus.write(f"Tekrar deneniyor: **{rec['filename']}** ({n + 1}/{len(err_indices)})")
+                        live = [e for e in rchain if e not in rexhausted]
+                        if not live:
+                            rec["error"] = "Tüm motorların kotası doldu — sonra tekrar deneyin."
+                            rprog.progress((n + 1) / len(err_indices))
+                            continue
                         try:
                             pdf_text = extract_pdf_text(rec.get("_bytes", b""))
                             if len(pdf_text) < 100:
                                 rec["error"] = "Metin çıkarılamadı (taranmış/görsel PDF olabilir)"
                             else:
-                                data = call_ai(pdf_text, engine, model,
-                                                ollama_url=ollama_url, gemini_api_key=gemini_api_key)
+                                data, used_eng = analyze_with_failover(
+                                    pdf_text, live, default_models, rkeys, ollama_url, rexhausted
+                                )
                                 rec["data"] = data
+                                rec["engine"] = used_eng
                                 rec["html"] = generate_html_card(data, company, rec["filename"])
                                 rec.pop("error", None)
                         except Exception as e:
                             rec["error"] = str(e)
                         rprog.progress((n + 1) / len(err_indices))
-                        if engine == "gemini" and n < len(err_indices) - 1:
-                            time.sleep(4.5)
+                        time.sleep(2.5)
                     rstatus.empty()
                     st.session_state["batch_results"] = results
                     st.rerun()
