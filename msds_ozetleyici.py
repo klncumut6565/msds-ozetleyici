@@ -434,9 +434,9 @@ def call_ollama(text: str, model: str, base_url: str) -> dict:
     return json.loads(raw)
 
 
-def call_gemini(text: str, api_key: str, model: str = "gemini-2.5-flash", max_retries: int = 3) -> dict:
-    """Google Gemini API ile analiz. Ücretsiz katmanda günlük/dakikalık limitler
-    olduğundan 429 (rate limit) hatasında kısa bir bekleme ile otomatik tekrar dener."""
+def call_gemini(text: str, api_key: str, model: str = "gemini-2.5-flash", max_retries: int = 4) -> dict:
+    """Google Gemini API ile analiz. Geçici sunucu hataları (429 kota / 503 yoğunluk /
+    500 dahili) durumunda artan beklemeyle otomatik tekrar dener."""
     if not GEMINI_SDK_OK:
         raise RuntimeError(
             "google-genai kütüphanesi kurulu değil. Komut isteminde şunu çalıştırın:\n"
@@ -462,8 +462,12 @@ def call_gemini(text: str, api_key: str, model: str = "gemini-2.5-flash", max_re
         except Exception as e:
             last_err = e
             msg = str(e)
-            if "429" in msg or "RESOURCE_EXHAUSTED" in msg or "rate" in msg.lower():
-                time.sleep(2 ** (attempt + 1))  # 2s, 4s, 8s
+            # Geçici sunucu hataları → bekle ve tekrar dene
+            transient = any(code in msg for code in ["429", "503", "500"]) or \
+                        any(w in msg.upper() for w in ["RESOURCE_EXHAUSTED", "UNAVAILABLE",
+                                                       "OVERLOADED", "HIGH DEMAND", "INTERNAL"])
+            if transient and attempt < max_retries - 1:
+                time.sleep(3 * (attempt + 1))  # 3s, 6s, 9s
                 continue
             raise
     raise last_err
@@ -792,9 +796,10 @@ ollama serve
 
                 for idx, f in enumerate(batch_files):
                     status.write(f"İşleniyor: **{f.name}** ({idx + 1}/{total})")
-                    record = {"filename": f.name}
+                    raw_bytes = f.read()
+                    record = {"filename": f.name, "_bytes": raw_bytes}
                     try:
-                        pdf_text = extract_pdf_text(f.read())
+                        pdf_text = extract_pdf_text(raw_bytes)
                         if len(pdf_text) < 100:
                             record["error"] = "Metin çıkarılamadı (taranmış/görsel PDF olabilir)"
                         else:
@@ -815,7 +820,7 @@ ollama serve
                 ok_count = sum(1 for r in results if "error" not in r)
                 err_count = total - ok_count
                 if err_count:
-                    st.warning(f"✓ {ok_count} başarılı, ✗ {err_count} hatalı (detaylar Excel'de 'Durum' sütununda)")
+                    st.warning(f"✓ {ok_count} başarılı, ✗ {err_count} hatalı — aşağıdan sadece hatalıları tekrar deneyebilirsiniz.")
                 else:
                     st.success(f"✓ Tüm {ok_count} dosya başarıyla analiz edildi!")
 
@@ -837,6 +842,35 @@ ollama serve
                         "Durum": "✅ Tamam"
                     })
             st.dataframe(table_rows, use_container_width=True, hide_index=True)
+
+            # Hatalı dosyaları sadece onları tekrar dene
+            err_indices = [i for i, r in enumerate(results) if "error" in r]
+            if err_indices and ready:
+                if st.button(f"🔁 Sadece hatalı {len(err_indices)} dosyayı tekrar dene",
+                             use_container_width=True):
+                    rprog = st.progress(0.0)
+                    rstatus = st.empty()
+                    for n, i in enumerate(err_indices):
+                        rec = results[i]
+                        rstatus.write(f"Tekrar deneniyor: **{rec['filename']}** ({n + 1}/{len(err_indices)})")
+                        try:
+                            pdf_text = extract_pdf_text(rec.get("_bytes", b""))
+                            if len(pdf_text) < 100:
+                                rec["error"] = "Metin çıkarılamadı (taranmış/görsel PDF olabilir)"
+                            else:
+                                data = call_ai(pdf_text, engine, model,
+                                                ollama_url=ollama_url, gemini_api_key=gemini_api_key)
+                                rec["data"] = data
+                                rec["html"] = generate_html_card(data, company, rec["filename"])
+                                rec.pop("error", None)
+                        except Exception as e:
+                            rec["error"] = str(e)
+                        rprog.progress((n + 1) / len(err_indices))
+                        if engine == "gemini" and n < len(err_indices) - 1:
+                            time.sleep(2)
+                    rstatus.empty()
+                    st.session_state["batch_results"] = results
+                    st.rerun()
 
             c1, c2, c3 = st.columns(3)
             with c1:
