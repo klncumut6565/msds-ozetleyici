@@ -377,6 +377,22 @@ OLLAMA_PROMPT = """Bu bir MSDS/SDS (Malzeme Güvenlik Bilgi Formu) belgesidir.
 Aşağıdaki metni analiz et. SADECE geçerli bir JSON nesnesi döndür — başka hiçbir metin yazma.
 Türkçe yanıt ver. Bilgi yoksa null kullan. Listeler boş dizi olabilir.
 
+GHS PİKTOGRAMLARI için ÇOK ÖNEMLİ: Belgede piktogramlar çoğunlukla RESİM olarak konur ve metinde "GHS05" gibi
+kod yazmaz. Bu yüzden piktogramları, belgedeki SINIFLANDIRMA İFADELERİNDEN ve H-KODLARINDAN türet. Bölüm 2
+(Zararlılık) ve Bölüm 3'teki sınıflandırmalara bak. Aşağıdaki eşleme tablosunu kullan:
+- "Patlayıcı" / "Patlayan" / H200-H204 → GHS01
+- "Alev. Sıvı" / "Alevlenir" / "Alev. Gaz/Katı/Aerosol" / H220-H228, H241-H242 → GHS02
+- "Oksitleyici" / "Oksitleyen" / H270, H271, H272 → GHS03
+- "Basınç altındaki gaz" / "Basınçlı gaz" / H280, H281 → GHS04
+- "Cilt Aşnd." / "Cilt aşınması" / "Metaller için aşındırıcı" / "Ciddi göz hasarı" / "Göz Hsr. 1" / H314, H318, H290 → GHS05
+- "Akut toksisite" kategori 1/2/3 / "Akut Tok." 1-3 / H300, H310, H330, H301, H311, H331 → GHS06
+- "Cilt tahrişi" / "Göz tahrişi" / "Cilt hassas." / "Akut Tok. 4" / "BHOT Tek Mrz. 3" / H302, H312, H315, H317, H319, H332, H335, H336 → GHS07
+- "Solunum hassas." / "Kanserojen" / "Mutajen" / "Üreme toksisitesi" / "Aspirasyon" / "BHOT" kat 1/2 / H304, H334, H340, H350, H360, H370, H372 → GHS08
+- "Sucul çevreye zararlı" / "Çevre" / H400, H410, H411 → GHS09
+KURALLAR: Aynı koşul birden çok kez geçse bile piktogramı bir kez ekle. H314 hem GHS05 hem GHS07 işaretiyle
+ilişkili olabilir ama H314 (ciddi yanık) varsa SADECE GHS05 kullan, GHS07 ekleme. Sadece metinde gerçekten
+sınıflandırma/H-kodu kanıtı olan piktogramları ekle; tahmin yürütme. Hiç sınıflandırma yoksa boş dizi [] döndür.
+
 BÖLÜM 14 (Taşımacılık) için önemli: Belgenin "BÖLÜM 14" / "Taşımacılık bilgileri" kısmını dikkatle oku.
 - un_numarasi: ADR/RID için verilen UN numarasını kullan (örn. "UN 2790"). Farklı modlar (IMDG/ICAO) farklı numara verirse ADR/RID'i tercih et.
 - adr_sinifi: ADR/RID sınıfı (örn. "8"). alt_tehlike: ikincil risk (örn. "3").
@@ -506,11 +522,89 @@ def call_gemini(text: str, api_key: str, model: str = "gemini-2.5-flash-lite", m
     raise last_err
 
 
+def infer_pictograms_from_text(data: dict) -> list:
+    """AI piktogram döndürmediyse, H-kodları ve sınıflandırma ifadelerinden GHS piktogramı türetir.
+    Belgede piktogram resim olarak var ama metin kodu yoksa devreye girer (güvenlik ağı)."""
+    # Taranacak metni topla: H ifadeleri + tehlike sınıfı + sağlık tehlikeleri
+    parts = []
+    parts.extend(data.get("h_ifadeleri") or [])
+    if data.get("tehlike_sinifi"):
+        parts.append(str(data["tehlike_sinifi"]))
+    sa = data.get("saglik_tehlikeleri") or {}
+    if isinstance(sa, dict):
+        parts.extend(str(v) for v in sa.values() if v)
+    blob = " ".join(str(p) for p in parts).upper()
+
+    if not blob.strip():
+        return []
+
+    found = set()
+
+    # H-kodu → piktogram eşlemesi
+    import re as _re
+    hcodes = set(_re.findall(r"H\d{3}", blob))
+    hmap = {
+        "GHS01": {"H200","H201","H202","H203","H204","H205"},
+        "GHS02": {"H220","H221","H222","H223","H224","H225","H226","H228","H241","H242","H250","H251","H252","H260","H261"},
+        "GHS03": {"H270","H271","H272"},
+        "GHS04": {"H280","H281"},
+        "GHS05": {"H290","H314","H318"},
+        "GHS06": {"H300","H301","H310","H311","H330","H331"},
+        "GHS07": {"H302","H312","H315","H317","H319","H332","H335","H336"},
+        "GHS08": {"H304","H334","H340","H341","H350","H351","H360","H361","H362","H370","H371","H372","H373"},
+        "GHS09": {"H400","H410","H411","H412","H413"},
+    }
+    for code, hs in hmap.items():
+        if hcodes & hs:
+            found.add(code)
+
+    # Metin ifadesi → piktogram (H-kodu yoksa veya ek kanıt için)
+    text_rules = [
+        ("GHS02", ["ALEVLENIR","ALEV. SIVI","ALEV. GAZ","ALEV. KATI","ALEV.SIVI","ALEVLENEN","PARLAYICI"]),
+        ("GHS03", ["OKSITLEYICI","OKSITLEYEN"]),
+        ("GHS04", ["BASINÇ ALTINDAKI GAZ","BASINÇLI GAZ","BASINC ALTINDAKI GAZ"]),
+        ("GHS05", ["CILT AŞND","CILT ASND","AŞINDIRICI","ASINDIRICI","CIDDI GÖZ HASARI","GÖZ HSR. 1","GOZ HSR. 1","METALLER IÇIN AŞINDIRICI"]),
+        ("GHS06", ["AKUT TOK. 1","AKUT TOK. 2","AKUT TOK. 3","AKUT TOKSISITE KATEGORI 1","ÖLÜMCÜL","ZEHIRLI"]),
+        ("GHS07", ["CILT TAHRIŞ","CILT TAHRIS","GÖZ TAHRIŞ","GOZ TAHRIS","CILT HASSAS","BHOT TEK MRZ. 3","BHOT TEK MRZ 3"]),
+        ("GHS08", ["KANSEROJEN","MUTAJEN","ÜREME TOKSI","UREME TOKSI","SOLUNUM HASSAS","ASPIRASYON","BHOT TEK MRZ. 1","BHOT TEK MRZ. 2","BHOT TEKR"]),
+        ("GHS09", ["SUCUL ÇEVRE","SUCUL CEVRE","ÇEVRE IÇIN TEHLIKELI","DENIZ KIRLETICI"]),
+        ("GHS01", ["PATLAYICI","PATLAYAN BOMBA","KARARSIZ PATLAYICI"]),
+    ]
+    for code, kws in text_rules:
+        if any(kw in blob for kw in kws):
+            found.add(code)
+
+    # Resmi GHS kuralı: GHS05 (aşındırıcı) varsa, GHS07 SADECE cilt/göz tahrişi (H315/H319)
+    # sebebiyle ekliyse gereksizdir → düşür. Ama H335/H336 (solunum/narkotik) gibi BAĞIMSIZ bir
+    # GHS07 sebebi varsa GHS07 KORUNUR.
+    if "GHS05" in found and "GHS07" in found:
+        ghs07_bagimsiz = bool(hcodes & {"H332","H335","H336","H302","H312","H317"}) or \
+                         any(k in blob for k in ["SOLUNUM YOLU TAHRIŞ","SOLUNUM YOLU TAHRIS","BHOT TEK MRZ. 3",
+                                                  "BHOT TEK MRZ 3","NARKOTIK","CILT HASSAS"])
+        if not ghs07_bagimsiz:
+            found.discard("GHS07")
+
+    return sorted(found)
+
+
 def call_ai(text: str, engine: str, model: str, ollama_url: str = "", gemini_api_key: str = "") -> dict:
     """Seçili AI motoruna göre tek bir çağrı noktası."""
     if engine == "gemini":
-        return call_gemini(text, gemini_api_key, model)
-    return call_ollama(text, model, ollama_url)
+        data = call_gemini(text, gemini_api_key, model)
+    else:
+        data = call_ollama(text, model, ollama_url)
+
+    # Güvenlik ağı: AI piktogram döndürmediyse H-kodları/sınıflandırmadan türet
+    try:
+        pikto = data.get("ghs_piktogramlari")
+        if not pikto or (isinstance(pikto, list) and len(pikto) == 0):
+            inferred = infer_pictograms_from_text(data)
+            if inferred:
+                data["ghs_piktogramlari"] = inferred
+    except Exception:
+        pass
+
+    return data
 
 
 def build_excel_summary(records: list) -> bytes:
