@@ -150,12 +150,7 @@ def generate_html_card(s: dict, company: dict = None, fname: str = "") -> str:
         items = "".join(f'<div style="font-size:9px;color:#333;padding:1.5px 0;">{p}</div>' for p in p_list[:5])
         h_html += f'<div style="font-size:9px;font-weight:500;color:#1565c0;margin-top:7px;margin-bottom:2px;">ÖNLEM (P)</div>{items}'
 
-    # Sağlık etkileri
-    saglik_rows = ""
-    for lbl, field in [("Solunum","solunum"),("Deri","deri"),("Göz","goz"),("Yutma","yutma")]:
-        if ok(sa.get(field)):
-            saglik_rows += f'<div style="font-size:9px;color:#333;padding:1px 0;"><span style="color:#777;">{lbl}: </span>{sa[field]}</div>'
-    saglik_html = f'<div style="margin-top:5px;padding-top:4px;border-top:.5px dotted #ddd;"><div style="font-size:9px;font-weight:500;color:#555;margin-bottom:2px;">Sağlık etkileri</div>{saglik_rows}</div>' if saglik_rows else ""
+    # (Sağlık etkileri bloğu kaldırıldı — İlk Yardım kutucukları yeterli bilgiyi veriyor)
 
     # ADR Bölüm 14 — her zaman gösterilir (veri yoksa da bölüm görünür)
     kemler_top = adr.get("kemler_kodu") if ok(adr.get("kemler_kodu")) else "–"
@@ -327,7 +322,6 @@ function printAs(){{
         {fab("👁","Göz",ia.get("goz"))}{fab("🖐","Deri",ia.get("deri"))}
         {fab("💨","Solunum",ia.get("solunum"))}{fab("💊","Yutma",ia.get("yutma"))}
       </div>
-      {saglik_html}
     </div>
   </div>
   <div>
@@ -443,9 +437,30 @@ def call_ollama(text: str, model: str, base_url: str) -> dict:
     return json.loads(raw)
 
 
-def call_gemini(text: str, api_key: str, model: str = "gemini-2.5-flash", max_retries: int = 4) -> dict:
+def _parse_retry_delay(msg: str) -> float:
+    """429 hata mesajından Google'ın önerdiği bekleme süresini (saniye) çıkarır."""
+    # "Please retry in 42.248190046s" veya "'retryDelay': '42s'"
+    m = re.search(r"retry in ([\d.]+)s", msg) or re.search(r"retryDelay['\"]?:\s*['\"]?(\d+)", msg)
+    if m:
+        try:
+            return min(60.0, float(m.group(1)) + 1)  # en fazla 60s bekle
+        except ValueError:
+            pass
+    return 0.0
+
+
+def _is_daily_quota_exhausted(msg: str) -> bool:
+    """Hatanın GÜNLÜK kota bitişi mi (beklemek işe yaramaz) yoksa dakikalık mı olduğunu ayırt eder."""
+    u = msg.upper()
+    return "PERDAY" in u.replace("_", "").replace(" ", "") or "REQUESTSPERDAY" in u.replace("_", "").replace(" ", "") \
+        or "GENERATEREQUESTSPERDAY" in u.replace("_", "").replace(" ", "") \
+        or "FREE_TIER_REQUESTS" in u or "GENERATE_CONTENT_FREE_TIER" in u
+
+
+def call_gemini(text: str, api_key: str, model: str = "gemini-2.5-flash-lite", max_retries: int = 4) -> dict:
     """Google Gemini API ile analiz. Geçici sunucu hataları (429 kota / 503 yoğunluk /
-    500 dahili) durumunda artan beklemeyle otomatik tekrar dener."""
+    500 dahili) durumunda Google'ın önerdiği süre kadar bekleyip otomatik tekrar dener.
+    Günlük ücretsiz kota bittiyse beklemenin faydası olmadığı için anlaşılır bir hata verir."""
     if not GEMINI_SDK_OK:
         raise RuntimeError(
             "google-genai kütüphanesi kurulu değil. Komut isteminde şunu çalıştırın:\n"
@@ -471,12 +486,21 @@ def call_gemini(text: str, api_key: str, model: str = "gemini-2.5-flash", max_re
         except Exception as e:
             last_err = e
             msg = str(e)
-            # Geçici sunucu hataları → bekle ve tekrar dene
+            # GÜNLÜK kota bittiyse beklemek işe yaramaz → net hata ver
+            if "429" in msg and _is_daily_quota_exhausted(msg):
+                raise RuntimeError(
+                    "Google Gemini GÜNLÜK ücretsiz limit doldu (bu model için günde sınırlı istek). "
+                    "Çözümler: (1) Birkaç saat sonra tekrar deneyin — limit Pasifik saatiyle gece yarısı sıfırlanır. "
+                    "(2) Soldaki menüden modeli 'gemini-2.5-flash-lite' seçin (daha yüksek günlük limit). "
+                    "(3) Çok sayıda dosyanız varsa yerel 'Ollama' motorunu kullanın (limitsiz)."
+                )
+            # Geçici hatalar (dakikalık limit / sunucu yoğunluğu) → bekle ve tekrar dene
             transient = any(code in msg for code in ["429", "503", "500"]) or \
                         any(w in msg.upper() for w in ["RESOURCE_EXHAUSTED", "UNAVAILABLE",
                                                        "OVERLOADED", "HIGH DEMAND", "INTERNAL"])
             if transient and attempt < max_retries - 1:
-                time.sleep(3 * (attempt + 1))  # 3s, 6s, 9s
+                wait = _parse_retry_delay(msg) or (3 * (attempt + 1))  # Google'ın önerisi yoksa 3/6/9s
+                time.sleep(wait)
                 continue
             raise
     raise last_err
@@ -723,7 +747,14 @@ ollama serve
             if not GEMINI_SDK_OK:
                 st.error("✗ google-genai kurulu değil")
                 st.code("pip install google-genai")
-            model = st.selectbox("Model", ["gemini-2.5-flash", "gemini-2.5-flash-lite"])
+            model = st.selectbox(
+                "Model",
+                ["gemini-2.5-flash-lite", "gemini-2.5-flash"],
+                help="Flash-Lite: daha yüksek günlük ücretsiz limit (toplu işlem için önerilir). "
+                     "Flash: biraz daha kaliteli ama günlük limiti düşük."
+            )
+            if model == "gemini-2.5-flash":
+                st.caption("⚠️ Flash'ın günlük ücretsiz limiti düşük. Çok dosya için Flash-Lite'ı tercih edin.")
 
             st.markdown(
                 '🔑 **Ücretsiz Gemini API anahtarı al** → '
@@ -895,11 +926,18 @@ ollama serve
             "Bittiğinde tek bir **Excel özeti** ve istersen tüm **HTML/JSON kartlarının ZIP'i** olarak indirebilirsin."
         )
         if engine == "gemini":
-            st.caption("☁️ Online motor seçili — istekler arasına otomatik küçük bir bekleme eklenir "
+            st.caption("☁️ Online motor seçili — istekler arasına otomatik bekleme eklenir "
                        "(ücretsiz katman dakikalık limiti için).")
+            st.warning(
+                "ℹ️ **Gemini ücretsiz katman günlük limitlidir.** Modele göre günde sınırlı sayıda dosya "
+                "işleyebilirsiniz (Flash-Lite, Flash'tan daha yüksek limit verir). Limit dolarsa Pasifik "
+                "saatiyle gece yarısı sıfırlanır. **Çok sayıda dosyanız varsa** ya gruplar halinde işleyin, "
+                "ya da limitsiz olan yerel **Ollama** motorunu kullanın.",
+                icon="⚠️"
+            )
         else:
-            st.caption("🖥️ Yerel motor seçili — yüzlerce dosyada toplam süre donanımınıza göre saatler sürebilir. "
-                       "Daha hızlı sonuç için sol panelden Gemini'ye geçebilirsiniz.")
+            st.caption("🖥️ Yerel motor seçili — yüzlerce dosyada toplam süre donanımınıza göre saatler sürebilir, "
+                       "ama günlük istek limiti YOKTUR. Daha hızlı sonuç için sol panelden Gemini'ye geçebilirsiniz.")
 
         batch_files = st.file_uploader(
             "MSDS/SDS PDF dosyalarını seçin (çoklu seçim)",
@@ -922,6 +960,7 @@ ollama serve
                 results = []
                 total = len(batch_files)
 
+                daily_quota_hit = False
                 for idx, f in enumerate(batch_files):
                     status.write(f"İşleniyor: **{f.name}** ({idx + 1}/{total})")
                     raw_bytes = f.read()
@@ -937,12 +976,23 @@ ollama serve
                             record["html"] = generate_html_card(data, company, f.name)
                     except Exception as e:
                         record["error"] = str(e)
+                        # Günlük ücretsiz kota bittiyse kalan dosyalar da aynı hatayı alır → erken dur
+                        if "GÜNLÜK ücretsiz limit" in str(e):
+                            daily_quota_hit = True
 
                     results.append(record)
                     progress.progress((idx + 1) / total)
 
+                    if daily_quota_hit:
+                        # Kalan dosyaları "işlenmedi" olarak işaretle
+                        for rem in batch_files[idx + 1:]:
+                            rem_bytes = rem.read() if hasattr(rem, "read") else b""
+                            results.append({"filename": rem.name, "_bytes": rem_bytes,
+                                            "error": "Günlük limit dolduğu için işlenmedi (sonra tekrar deneyin veya Flash-Lite/Ollama kullanın)"})
+                        break
+
                     if engine == "gemini" and idx < total - 1:
-                        time.sleep(2)  # ücretsiz katman dakikalık limiti için tampon
+                        time.sleep(4.5)  # ücretsiz katman dakikalık limiti için güvenli tampon (~13 istek/dk)
 
                 status.empty()
                 ok_count = sum(1 for r in results if "error" not in r)
@@ -995,7 +1045,7 @@ ollama serve
                             rec["error"] = str(e)
                         rprog.progress((n + 1) / len(err_indices))
                         if engine == "gemini" and n < len(err_indices) - 1:
-                            time.sleep(2)
+                            time.sleep(4.5)
                     rstatus.empty()
                     st.session_state["batch_results"] = results
                     st.rerun()
