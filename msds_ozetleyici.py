@@ -499,6 +499,29 @@ def select_relevant_text(text: str, gemini_limit: int = 60000) -> str:
 
 
 
+# Her motor için MODEL YEDEK ZİNCİRİ: bir model kotası dolar/hata verirse,
+# aynı motorun sıradaki modeli denenir. İlk eleman birincil (kullanıcının seçtiği) modeldir.
+MODEL_FALLBACKS = {
+    "groq": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
+    "gemini": ["gemini-2.5-flash-lite", "gemini-2.5-flash"],
+    "openrouter": ["openrouter/free", "deepseek/deepseek-r1:free",
+                   "meta-llama/llama-3.3-70b-instruct:free"],
+    "openai": ["gpt-4o-mini", "gpt-4o"],
+    "claude": ["claude-haiku-4-5-20251001", "claude-sonnet-4-6"],
+    "ollama": [],  # yerelde tek model
+}
+
+
+def _model_chain(engine: str, primary: str) -> list:
+    """Bir motor için denenecek model sırasını döndürür: önce kullanıcının seçtiği model (primary),
+    sonra o motorun diğer yedek modelleri (tekrarsız)."""
+    chain = [primary] if primary else []
+    for mdl in MODEL_FALLBACKS.get(engine, []):
+        if mdl and mdl not in chain:
+            chain.append(mdl)
+    return chain
+
+
 def call_openai_compatible(text: str, api_key: str, model: str, base_url: str,
                             char_limit: int = 30000, max_retries: int = 4,
                             extra_headers: dict = None) -> dict:
@@ -606,26 +629,12 @@ def call_openai_compatible(text: str, api_key: str, model: str, base_url: str,
 
 def call_groq(text: str, api_key: str, model: str = "llama-3.3-70b-versatile", max_retries: int = 6) -> dict:
     """Groq API (OpenAI-uyumlu, çok hızlı). Metin KIRPILMAZ — tam belge gönderilir.
-    70B modelinin GÜNLÜK token limiti (TPD=100K) dolarsa, otomatik olarak 8B modeline düşer
-    (8B'nin TPD'si 500K — çok daha yüksek). Böylece Groq komple devre dışı kalmaz."""
+    Model yedekleme (70B→8B) artık call_ai seviyesinde MODEL_FALLBACKS ile yapılır."""
     if not api_key:
         raise RuntimeError("Groq API anahtarı girilmemiş.")
-    try:
-        return call_openai_compatible(text, api_key, model,
-                                      base_url="https://api.groq.com/openai/v1",
-                                      char_limit=999999, max_retries=max_retries)
-    except RuntimeError as e:
-        msg = str(e)
-        # 70B'nin günlük token bütçesi dolduysa ve henüz 8B denenmediyse → 8B'ye düş
-        is_tpd = "tokens per day" in msg.lower() or "tpd" in msg.lower() or "DAILY_QUOTA_EXHAUSTED" in msg
-        if is_tpd and "70b" in model.lower():
-            try:
-                return call_openai_compatible(text, api_key, "llama-3.1-8b-instant",
-                                              base_url="https://api.groq.com/openai/v1",
-                                              char_limit=999999, max_retries=max_retries)
-            except RuntimeError:
-                raise  # 8B de dolduysa, üst katman failover'a geçsin
-        raise
+    return call_openai_compatible(text, api_key, model,
+                                  base_url="https://api.groq.com/openai/v1",
+                                  char_limit=999999, max_retries=max_retries)
 
 
 def call_openrouter(text: str, api_key: str, model: str = "openrouter/free",
@@ -899,23 +908,54 @@ ENGINE_LABELS = {
 FAILOVER_ORDER = ["groq", "gemini", "openrouter", "openai", "claude", "ollama"]
 
 
+def _call_single_model(text, engine, model, ollama_url,
+                       gemini_api_key, groq_api_key, openai_api_key, claude_api_key, openrouter_api_key):
+    """Tek bir motoru, tek bir modelle çağırır (model zinciri YOK)."""
+    if engine == "gemini":
+        return call_gemini(text, gemini_api_key, model)
+    elif engine == "groq":
+        return call_groq(text, groq_api_key, model)
+    elif engine == "openrouter":
+        return call_openrouter(text, openrouter_api_key, model)
+    elif engine == "openai":
+        return call_openai_compatible(text, openai_api_key, model,
+                                      base_url="https://api.openai.com/v1")
+    elif engine == "claude":
+        return call_claude(text, claude_api_key, model)
+    else:
+        return call_ollama(text, model, ollama_url)
+
+
 def call_ai(text: str, engine: str, model: str, ollama_url: str = "",
             gemini_api_key: str = "", groq_api_key: str = "", openai_api_key: str = "",
             claude_api_key: str = "", openrouter_api_key: str = "") -> dict:
-    """Seçili AI motoruna göre tek bir çağrı noktası."""
-    if engine == "gemini":
-        data = call_gemini(text, gemini_api_key, model)
-    elif engine == "groq":
-        data = call_groq(text, groq_api_key, model)
-    elif engine == "openrouter":
-        data = call_openrouter(text, openrouter_api_key, model)
-    elif engine == "openai":
-        data = call_openai_compatible(text, openai_api_key, model,
-                                      base_url="https://api.openai.com/v1")
-    elif engine == "claude":
-        data = call_claude(text, claude_api_key, model)
-    else:
-        data = call_ollama(text, model, ollama_url)
+    """Seçili AI motoruna göre çağrı. Motorun MODEL ZİNCİRİNİ sırayla dener:
+    bir model günlük kota/boyut/model-hatası verirse, aynı motorun sıradaki modeline geçer.
+    Tüm modeller tükenirse son hatayı yükseltir (üst katman başka MOTORA failover eder)."""
+    models_to_try = _model_chain(engine, model)
+    if not models_to_try:
+        models_to_try = [model]
+
+    data = None
+    last_err = None
+    for i, mdl in enumerate(models_to_try):
+        try:
+            data = _call_single_model(
+                text, engine, mdl, ollama_url,
+                gemini_api_key, groq_api_key, openai_api_key, claude_api_key, openrouter_api_key
+            )
+            break  # başarılı → dur
+        except Exception as e:
+            last_err = e
+            # Günlük kota / boyut / model-hatası → aynı motorun SIRADAKİ modelini dene
+            if _is_daily_exhausted_error(e) and i < len(models_to_try) - 1:
+                continue
+            # Dakikalık limit veya başka hata → model değiştirmek çözmez, üst katmana bırak
+            raise
+    if data is None:
+        if last_err:
+            raise last_err
+        raise RuntimeError("Model denenemedi.")
 
     # Güvenlik ağı: AI piktogram döndürmediyse H-kodları/sınıflandırmadan türet
     try:
@@ -1790,9 +1830,24 @@ def main():
                     _show_live(record)   # tamamlanan ürünü ANINDA canlı listede göster
                     progress.progress((idx + 1) / total)
 
-                    # Aktif motor bulut ise dakikalık limite takılmamak için kısa bekleme
-                    if current_engine["val"] in ("gemini", "groq", "openai") and idx < total - 1:
-                        time.sleep(2.5 if current_engine["val"] == "groq" else 4.5)
+                    # Dosyalar arası bekleme: AKTİF MOTORUN dakikalık istek limitine (RPM) göre.
+                    # Amaç: dakikalık limite (429) takılmamak için istekleri yaymak.
+                    # RPM değerleri (ücretsiz katman, 2026): Groq 30, Gemini ~30 (ama TPM çok yüksek),
+                    # OpenRouter 20, OpenAI/Claude hesaba göre. Bekleme = 60/RPM + küçük pay.
+                    if idx < total - 1:
+                        rpm_map = {
+                            "groq": 30,        # 30 RPM → ~2 sn/istek
+                            "gemini": 30,      # cömert TPM ama RPM benzer
+                            "openrouter": 20,  # 20 RPM → ~3 sn/istek
+                            "openai": 60,      # ücretli, daha yüksek
+                            "claude": 50,      # ücretli
+                            "ollama": 0,       # yerel, limit yok
+                        }
+                        eng_now = current_engine["val"]
+                        rpm = rpm_map.get(eng_now, 30)
+                        if rpm > 0:
+                            wait_between = (60.0 / rpm) + 0.3   # limitin biraz altında kal
+                            time.sleep(wait_between)
 
                 status.empty()
                 ok_count = sum(1 for r in results if "error" not in r)
