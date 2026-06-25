@@ -452,6 +452,35 @@ BÖLÜM 14 (Taşımacılık) için önemli: Belgenin "BÖLÜM 14" / "Taşımacı
 - sevkiyat_adi: uygun sevkiyat adı. kemler_kodu varsa al, yoksa null.
 - Bilgi gerçekten yoksa null yaz; ama metinde varsa MUTLAKA doldur.
 
+DEPOLAMA (depolama): BÖLÜM 7 "Elleçleme ve depolama" / "Güvenli depolama için koşullar" kısmını oku.
+Depolama koşullarını KISA bir cümleyle özetle (örn. "Orijinal kabında, ağzı kapalı, serin ve iyi
+havalandırılan yerde, uyumsuz maddelerden uzak tutun"). Bu bölüm neredeyse her MSDS'te DOLUDUR — boş bırakma,
+metindeki depolama tedbirlerini MUTLAKA özetle.
+
+DÖKÜLME (dokulmede_yapilacaklar): BÖLÜM 6 "Kaza sonucu yayılmaya karşı önlemler" kısmını oku. Dökülme
+durumunda yapılacakları KISA özetle (örn. "Koruyucu giysi giyin, tozu/sızıntıyı toplayın, kanalizasyona
+karışmasını önleyin"). Metinde varsa MUTLAKA doldur.
+
+BERTARAF (bertaraf): BÖLÜM 13 "Bertaraf etme bilgileri" / "Atık işleme yöntemleri" kısmını oku. Atık
+bertaraf yöntemini KISA özetle (örn. "Lisanslı atık bertaraf tesisinde imha edin, kanalizasyona boşaltmayın").
+Metinde varsa MUTLAKA doldur.
+
+DİĞER BÖLÜMLER — her biri için ilgili kısmı oku ve metinde bilgi varsa MUTLAKA doldur (boş bırakma):
+- h_ifadeleri / p_ifadeleri: BÖLÜM 2 "Zararlılık tanımlanması" / "Etiket unsurları". Her H/P kodunu kısa
+  açıklamasıyla ver (örn. "H334 - Solunması halinde alerjiye yol açabilir"). En önemlilerini al.
+- tehlike_sinifi: BÖLÜM 2'deki sınıflandırma ifadelerini birleştir (örn. "Solnm. Hassas. 1; Cilt Hassas. 1").
+- fiziksel_ozellikler: BÖLÜM 9 "Fiziksel ve Kimyasal Özellikler". gorunum, renk, koku, parlama_noktasi,
+  kaynama_noktasi, erime_noktasi, yogunluk (bağıl yoğunluk), ph, cozunurluk, buhar_basinci alanlarını bu
+  bölümden doldur. "Uygun bilgi yok / Uygulanamaz" yazanları null bırak, ama gerçek değer varsa MUTLAKA yaz.
+- saglik_tehlikeleri: BÖLÜM 11 "Toksikolojik bilgiler" veya BÖLÜM 4.2'den solunum/deri/goz/yutma etkilerini
+  kısa özetle.
+- ilk_yardim: BÖLÜM 4 "İlk yardım önlemleri"nden solunum (soluma), deri (cilt teması), goz (göz teması),
+  yutma maddelerini KISA özetle. Bu bölüm her MSDS'te DOLUDUR — boş bırakma.
+- yangin: BÖLÜM 5 "Yangınla mücadele". sondurme_araci (uygun söndürücüler), yasakli_sondurme (uygun olmayan
+  söndürücüler), ozel_tehlike (zararlı yanma ürünleri) alanlarını doldur.
+- kkd: BÖLÜM 8 "Maruz kalma kontrolleri / kişisel korunma"dan solunum, el (eldiven), goz (göz/yüz koruma),
+  vucut (cilt/vücut koruma) önerilerini KISA özetle. Bu bölüm genelde DOLUDUR — boş bırakma.
+
 BELGE:
 {text}
 
@@ -553,7 +582,7 @@ def call_openai_compatible(text: str, api_key: str, model: str, base_url: str,
     raise last_err
 
 
-def call_groq(text: str, api_key: str, model: str = "llama-3.1-8b-instant", max_retries: int = 6) -> dict:
+def call_groq(text: str, api_key: str, model: str = "llama-3.3-70b-versatile", max_retries: int = 6) -> dict:
     """Groq API (OpenAI-uyumlu, çok hızlı). Metin KIRPILMAZ — tam belge gönderilir.
     Belge Groq'a sığmazsa 413 alınır ve otomatik olarak daha büyük motora (Gemini/Claude) geçilir."""
     if not api_key:
@@ -1237,9 +1266,9 @@ def main():
         elif engine == "groq":
             model = st.selectbox(
                 "Model",
-                ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"],
-                help="8B: en hızlı, günde ~14.400 istek (toplu işlem için ideal). "
-                     "70B: daha kaliteli, günde ~1.000 istek."
+                ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
+                help="70B (önerilen): uzun MSDS belgelerinde daha başarılı, daha yüksek dakikalık kapasite. "
+                     "8B: daha hızlı ve günde daha çok istek (~14.400) ama uzun belgelerde sorun çıkarabilir."
             )
             st.markdown('🔑 **Ücretsiz Groq anahtarı al** → [console.groq.com](https://console.groq.com/keys)')
             st.caption("⚡ Groq anahtarını aşağıdaki **🔁 Otomatik yedekleme** bölümüne girin (kayıtlı kalır).")
@@ -1374,7 +1403,7 @@ def main():
 
     # Her motor için varsayılan model (failover sırasında o motora geçildiğinde kullanılır)
     default_models = {
-        "groq": "llama-3.1-8b-instant",
+        "groq": "llama-3.3-70b-versatile",
         "gemini": "gemini-2.5-flash-lite",
         "openai": "gpt-4o-mini",
         "claude": "claude-haiku-4-5-20251001",
@@ -1529,18 +1558,26 @@ def main():
 
         # Aktif failover zincirini göster
         _chain_preview = build_failover_chain(engine)
-        if _chain_preview:
+        if len(_chain_preview) >= 2:
             chain_str = " → ".join(ENGINE_LABELS.get(e, e) for e in _chain_preview)
-            st.success(f"🔁 **Otomatik yedekleme aktif:** {chain_str}\n\n"
+            st.success(f"🔁 **Otomatik yedekleme aktif ({len(_chain_preview)} motor):** {chain_str}\n\n"
                        "Bir motorun kotası dolduğunda kalan dosyalar kaldığı yerden **sıradaki motorla** "
                        "kesintisiz devam eder. İşiniz baştan başlamaz.")
+        elif len(_chain_preview) == 1:
+            only = ENGINE_LABELS.get(_chain_preview[0], _chain_preview[0])
+            if _chain_preview[0] == "ollama":
+                st.info(f"🖥️ Yalnızca **{only}** aktif — günlük limit YOKTUR ama hız donanımınıza bağlıdır.")
+            else:
+                st.error(
+                    f"⚠️ **DİKKAT: Yalnızca tek motor hazır → {only}**\n\n"
+                    f"Bu motorun günlük kotası dolduğunda **işlem durur** ('Tüm motorlar doldu' hatası alırsınız). "
+                    f"Bunu önlemek için sol paneldeki **🔁 Otomatik yedekleme** bölümüne **en az bir motor daha** "
+                    f"anahtarı girin. En önerilen: ⚡ **Groq** (console.groq.com — ücretsiz, kredi kartsız, "
+                    f"günde ~14.400 istek). İki motor girince biri dolsa diğeri devralır."
+                )
         else:
-            st.warning("⚠️ Hiçbir AI motoru hazır değil. Sol panelden en az bir motor seçip anahtar girin "
-                       "(veya Ollama kurun).")
-
-        if engine == "ollama" and len(_chain_preview) == 1:
-            st.caption("🖥️ Yalnızca yerel Ollama aktif — günlük limit YOKTUR ama hız donanımınıza bağlıdır. "
-                       "Daha hızlı + yedekli çalışma için sol panelden Groq/Gemini anahtarı da girebilirsiniz.")
+            st.warning("⚠️ Hiçbir AI motoru hazır değil. Sol paneldeki **🔁 Otomatik yedekleme** bölümünden "
+                       "en az bir motor anahtarı girin (veya Ollama kurun).")
 
         batch_files = st.file_uploader(
             "MSDS/SDS PDF dosyalarını seçin (çoklu seçim)",
