@@ -584,14 +584,26 @@ def call_openai_compatible(text: str, api_key: str, model: str, base_url: str,
 
 def call_groq(text: str, api_key: str, model: str = "llama-3.3-70b-versatile", max_retries: int = 6) -> dict:
     """Groq API (OpenAI-uyumlu, çok hızlı). Metin KIRPILMAZ — tam belge gönderilir.
-    Belge Groq'a sığmazsa 413 alınır ve otomatik olarak daha büyük motora (Gemini/Claude) geçilir."""
+    70B modelinin GÜNLÜK token limiti (TPD=100K) dolarsa, otomatik olarak 8B modeline düşer
+    (8B'nin TPD'si 500K — çok daha yüksek). Böylece Groq komple devre dışı kalmaz."""
     if not api_key:
         raise RuntimeError("Groq API anahtarı girilmemiş.")
-    # char_limit artık kırpma için kullanılmıyor (select_relevant_text tam metni döndürür),
-    # sadece imza uyumluluğu için yüksek bir değer veriyoruz.
-    return call_openai_compatible(text, api_key, model,
-                                  base_url="https://api.groq.com/openai/v1",
-                                  char_limit=999999, max_retries=max_retries)
+    try:
+        return call_openai_compatible(text, api_key, model,
+                                      base_url="https://api.groq.com/openai/v1",
+                                      char_limit=999999, max_retries=max_retries)
+    except RuntimeError as e:
+        msg = str(e)
+        # 70B'nin günlük token bütçesi dolduysa ve henüz 8B denenmediyse → 8B'ye düş
+        is_tpd = "tokens per day" in msg.lower() or "tpd" in msg.lower() or "DAILY_QUOTA_EXHAUSTED" in msg
+        if is_tpd and "70b" in model.lower():
+            try:
+                return call_openai_compatible(text, api_key, "llama-3.1-8b-instant",
+                                              base_url="https://api.groq.com/openai/v1",
+                                              char_limit=999999, max_retries=max_retries)
+            except RuntimeError:
+                raise  # 8B de dolduysa, üst katman failover'a geçsin
+        raise
 
 
 def call_claude(text: str, api_key: str, model: str = "claude-haiku-4-5-20251001", max_retries: int = 4) -> dict:
@@ -1480,7 +1492,17 @@ def main():
                         st.error("Model JSON formatında yanıt vermedi. Tekrar deneyin.")
                         return
                     except Exception as e:
-                        st.error(f"Analiz hatası: {e}")
+                        diag = diagnose_error(str(e))
+                        # Denenen motorları ve kalanları açıkça göster
+                        denenen = [ENGINE_LABELS.get(x, x) for x in _chain]
+                        st.error(f"❌ **{diag['etiket']}** — {diag['kaynak']}\n\n{diag['aciklama']}")
+                        st.warning(f"**Çözüm:** {diag['cozum']}")
+                        if len(denenen) > 1:
+                            st.caption(f"Denenen motorlar (hepsi başarısız): {', '.join(denenen)} — "
+                                       "tümünün kotası dolu olabilir. Farklı bir motor anahtarı ekleyin "
+                                       "veya kotaların sıfırlanmasını bekleyin.")
+                        with st.expander("🔧 Teknik hata mesajı"):
+                            st.code(str(e), language=None)
                         return
 
                 st.success("✓ Analiz tamamlandı!")
