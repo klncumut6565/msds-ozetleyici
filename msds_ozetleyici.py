@@ -1262,8 +1262,14 @@ def main():
                                  help="Haiku: hızlı ve ucuz, bu iş için yeterli. Sonnet: daha kaliteli, pahalı.")
             st.markdown('🔑 **Claude (Anthropic) anahtarı** → [console.anthropic.com](https://console.anthropic.com/settings/keys)')
             st.caption("🧠 Claude anahtarını aşağıdaki **🔁 Otomatik yedekleme** bölümüne girin (kayıtlı kalır).")
-            st.caption("⚠️ Claude ücretlidir (ücretsiz katman yok). En kaliteli sonuç için; basit MSDS işinde "
-                       "Groq/Gemini de yeterlidir. Düşük maliyet için Haiku önerilir.")
+            st.warning(
+                "⚠️ **Önemli:** Claude **API** ayrı bir üründür — kullandıkça ödenir ve önceden "
+                "**kredi/bakiye yüklemek** gerekir (console.anthropic.com → Billing). "
+                "**Claude Pro aboneliğiniz (claude.ai sohbet) bu API'yı KAPSAMAZ** — ayrı sistemlerdir. "
+                "Bakiye yoksa istekler *'credit balance too low'* hatasıyla reddedilir.\n\n"
+                "Bu basit MSDS işi için Claude gereksiz pahalıdır; **Groq + Gemini (ücretsiz) fazlasıyla yeterli.**",
+                icon="⚠️"
+            )
 
         else:  # gemini
             if not GEMINI_SDK_OK:
@@ -1293,7 +1299,7 @@ def main():
                 "- ⚡ **Groq** (ücretsiz, kredi kartsız, en yüksek limit): [console.groq.com/keys](https://console.groq.com/keys)\n"
                 "- ☁️ **Gemini** (ücretsiz): [aistudio.google.com/apikey](https://aistudio.google.com/apikey)\n"
                 "- 🤖 **OpenAI** (ücretli): [platform.openai.com/api-keys](https://platform.openai.com/api-keys)\n"
-                "- 🧠 **Claude** (ücretli): [console.anthropic.com](https://console.anthropic.com/settings/keys)"
+                "- 🧠 **Claude** (ücretli, **ön ödemeli kredi gerekir** — Claude Pro aboneliği API'yı KAPSAMAZ): [console.anthropic.com](https://console.anthropic.com/settings/keys)"
             )
             st.markdown("**Her motorun anahtarını kendi kutusuna girin** (boş bıraktıklarınız atlanır):")
 
