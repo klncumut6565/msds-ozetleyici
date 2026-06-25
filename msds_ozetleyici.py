@@ -59,6 +59,51 @@ GHS_IMG = {
 def ok(v):
     return bool(v and str(v).strip() and str(v).strip() not in ("null", "None", "—", "-"))
 
+
+def flatten_text(v):
+    """AI bazen metin alanını sözlük/liste döndürür (örn. {'atik_isleme': '...'}).
+    Bunu karta basılabilir düz, okunur metne çevirir; {' '} gibi ham işaretleri engeller."""
+    if v is None:
+        return ""
+    if isinstance(v, str):
+        return v.strip()
+    if isinstance(v, (int, float, bool)):
+        return str(v)
+    if isinstance(v, (list, tuple)):
+        parts = [flatten_text(x) for x in v]
+        return " ".join(p for p in parts if p)
+    if isinstance(v, dict):
+        # Değerleri al; tek değer varsa direkt onu, çoksa cümleleri birleştir
+        vals = [flatten_text(x) for x in v.values()]
+        vals = [p for p in vals if p]
+        return " ".join(vals)
+    return str(v)
+
+
+def normalize_summary(s: dict) -> dict:
+    """Karta basılmadan önce tüm serbest-metin alanlarını düz metne indirger."""
+    if not isinstance(s, dict):
+        return {}
+    s = dict(s)  # kopya
+    # Üst düzey serbest metin alanları
+    for key in ["depolama", "dokulmede_yapilacaklar", "bertaraf", "tehlike_sinifi",
+                "urun_adi", "kimyasal_adi", "cas_numarasi", "formul", "uretici",
+                "acil_telefon", "sinyal_kelimesi"]:
+        if key in s and not isinstance(s[key], str):
+            s[key] = flatten_text(s[key])
+    # İç içe nesnelerdeki metin alanları
+    for grp in ["fiziksel_ozellikler", "saglik_tehlikeleri", "ilk_yardim", "yangin", "kkd"]:
+        sub = s.get(grp)
+        if isinstance(sub, dict):
+            s[grp] = {k: (flatten_text(val) if not isinstance(val, str) else val)
+                      for k, val in sub.items()}
+    # ADR Bölüm 14 metin alanları
+    adr = s.get("adr_bolum14")
+    if isinstance(adr, dict):
+        s["adr_bolum14"] = {k: (flatten_text(val) if not isinstance(val, (str, list)) else val)
+                            for k, val in adr.items()}
+    return s
+
 def safe_filename(name: str, fallback: str = "MSDS_Ozet") -> str:
     """Ürün adını Windows dosya adına uygun, Türkçe karaktersiz hale getirir."""
     tr_map = str.maketrans("çğıöşüÇĞİÖŞÜ", "cgiosuCGIOSU")
@@ -99,6 +144,8 @@ def kr(icon, label, val):
 def generate_html_card(s: dict, company: dict = None, fname: str = "") -> str:
     if company is None:
         company = {}
+
+    s = normalize_summary(s)  # dict/list metin alanlarını düz metne çevir
 
     ghs_list = [c for c in (s.get("ghs_piktogramlari") or []) if c in GHS_IMG]
     h_list   = s.get("h_ifadeleri") or []
@@ -221,6 +268,7 @@ def generate_html_card(s: dict, company: dict = None, fname: str = "") -> str:
     uretici    = s.get("uretici") or "—"
     acil       = s.get("acil_telefon") or ""
     tehlike    = s.get("tehlike_sinifi") or ""
+    revizyon   = flatten_text(s.get("revizyon_tarihi") or "")
     cas_line   = f"CAS: {cas}" + (f" · {formul}" if ok(formul) else "")
 
     # PDF kaydederken dosya adı bu <title>'dan gelir → ürün adını dosya-dostu yap
@@ -280,6 +328,7 @@ function printAs(){{
       <div style="min-width:0;">
         {"" if has_co else '<div style="font-size:8px;opacity:.5;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:2px;">Malzeme Güvenlik Bilgi Formu · Tek Sayfa Özet</div>'}
         <div style="font-size:17px;font-weight:500;line-height:1.15;">{urun}</div>
+        {f'<div style="font-size:8.5px;opacity:.55;margin-top:2px;">Revizyon Tarihi: {revizyon}</div>' if ok(revizyon) else ""}
         {f'<div style="font-size:9.5px;opacity:.65;margin-top:1px;">{kimyasal}</div>' if ok(kimyasal) and kimyasal!=urun else ""}
       </div>
     </div>
@@ -393,6 +442,9 @@ KURALLAR: Aynı koşul birden çok kez geçse bile piktogramı bir kez ekle. H31
 ilişkili olabilir ama H314 (ciddi yanık) varsa SADECE GHS05 kullan, GHS07 ekleme. Sadece metinde gerçekten
 sınıflandırma/H-kodu kanıtı olan piktogramları ekle; tahmin yürütme. Hiç sınıflandırma yoksa boş dizi [] döndür.
 
+revizyon_tarihi: Belgenin başındaki "Yeni düzenleme tarihi", "Revizyon tarihi", "Güncelleme tarihi" veya
+benzeri tarihi al (örn. "21.07.2020"). Yoksa "Hazırlama tarihi"ni kullan. Hiçbiri yoksa null bırak.
+
 BÖLÜM 14 (Taşımacılık) için önemli: Belgenin "BÖLÜM 14" / "Taşımacılık bilgileri" kısmını dikkatle oku.
 - un_numarasi: ADR/RID için verilen UN numarasını kullan (örn. "UN 2790"). Farklı modlar (IMDG/ICAO) farklı numara verirse ADR/RID'i tercih et.
 - adr_sinifi: ADR/RID sınıfı (örn. "8"). alt_tehlike: ikincil risk (örn. "3").
@@ -404,7 +456,7 @@ BELGE:
 {text}
 
 JSON ŞEMASI:
-{{"urun_adi":"","kimyasal_adi":null,"cas_numarasi":null,"formul":null,"uretici":null,"acil_telefon":null,"sinyal_kelimesi":"TEHLİKE veya UYARI veya null","ghs_piktogramlari":["GHS01"..."GHS09"],"tehlike_sinifi":null,"h_ifadeleri":["H225 - Çok kolay alev alır" max 7],"p_ifadeleri":["P210 - ..." en önemli 5],"fiziksel_ozellikler":{{"gorunum":null,"renk":null,"koku":null,"parlama_noktasi":null,"kaynama_noktasi":null,"erime_noktasi":null,"yogunluk":null,"ph":null,"cozunurluk":null,"buhar_basinci":null}},"saglik_tehlikeleri":{{"solunum":null,"deri":null,"goz":null,"yutma":null}},"ilk_yardim":{{"solunum":null,"deri":null,"goz":null,"yutma":null}},"yangin":{{"sondurme_araci":null,"yasakli_sondurme":null,"ozel_tehlike":null}},"kkd":{{"solunum":null,"el":null,"goz":null,"vucut":null}},"depolama":null,"dokulmede_yapilacaklar":null,"bertaraf":null,"adr_bolum14":{{"un_numarasi":null,"kemler_kodu":null,"sevkiyat_adi":null,"adr_sinifi":null,"alt_tehlike":null,"ambalaj_grubu":null,"deniz_kirletici":"Evet/Hayır/null","tunel_kodu":null,"etiketler":[],"ozel_hukumler":null}}}}"""
+{{"urun_adi":"","kimyasal_adi":null,"cas_numarasi":null,"formul":null,"revizyon_tarihi":null,"uretici":null,"acil_telefon":null,"sinyal_kelimesi":"TEHLİKE veya UYARI veya null","ghs_piktogramlari":["GHS01"..."GHS09"],"tehlike_sinifi":null,"h_ifadeleri":["H225 - Çok kolay alev alır" max 7],"p_ifadeleri":["P210 - ..." en önemli 5],"fiziksel_ozellikler":{{"gorunum":null,"renk":null,"koku":null,"parlama_noktasi":null,"kaynama_noktasi":null,"erime_noktasi":null,"yogunluk":null,"ph":null,"cozunurluk":null,"buhar_basinci":null}},"saglik_tehlikeleri":{{"solunum":null,"deri":null,"goz":null,"yutma":null}},"ilk_yardim":{{"solunum":null,"deri":null,"goz":null,"yutma":null}},"yangin":{{"sondurme_araci":null,"yasakli_sondurme":null,"ozel_tehlike":null}},"kkd":{{"solunum":null,"el":null,"goz":null,"vucut":null}},"depolama":null,"dokulmede_yapilacaklar":null,"bertaraf":null,"adr_bolum14":{{"un_numarasi":null,"kemler_kodu":null,"sevkiyat_adi":null,"adr_sinifi":null,"alt_tehlike":null,"ambalaj_grubu":null,"deniz_kirletici":"Evet/Hayır/null","tunel_kodu":null,"etiketler":[],"ozel_hukumler":null}}}}"""
 
 
 def select_relevant_text(text: str, gemini_limit: int = 60000) -> str:
@@ -459,23 +511,35 @@ def call_openai_compatible(text: str, api_key: str, model: str, base_url: str,
         try:
             resp = requests.post(url, headers=headers, json=payload, timeout=120)
             if resp.status_code == 429:
-                # Günlük mü dakikalık mı? Retry-After header'ına bak
-                retry_after = resp.headers.get("retry-after") or resp.headers.get("Retry-After")
                 body = resp.text
-                if _is_daily_quota_exhausted(body) or "RPD" in body or "per day" in body.lower():
+                retry_after = resp.headers.get("retry-after") or resp.headers.get("Retry-After")
+                low = body.lower()
+                # GÜNLÜK kota mı (RPD/per day)? → beklemek işe yaramaz, failover'a geç
+                if (_is_daily_quota_exhausted(body) or "rpd" in low
+                        or "per day" in low or "requests per day" in low):
                     raise RuntimeError("DAILY_QUOTA_EXHAUSTED: " + body[:300])
+                # DAKİKALIK token/istek limiti (TPM/RPM)? → kısa bekle ve TEKRAR DENE (hata sayma!)
                 wait = 0.0
                 if retry_after:
                     try:
-                        wait = min(60.0, float(retry_after) + 1)
+                        wait = float(retry_after) + 1
                     except ValueError:
                         wait = 0.0
                 if not wait:
-                    wait = _parse_retry_delay(body) or (3 * (attempt + 1))
+                    wait = _parse_retry_delay(body) or 0.0
+                # Groq mesajında "try again in 7.5s" gibi süre olabilir
+                if not wait:
+                    msr = re.search(r"in (\d+(?:\.\d+)?)s", low)
+                    if msr:
+                        wait = float(msr.group(1)) + 1
+                if not wait:
+                    wait = 20.0  # TPM penceresi için makul varsayılan
+                wait = min(65.0, wait)
                 if attempt < max_retries - 1:
                     time.sleep(wait)
                     continue
-                raise RuntimeError("RATE_LIMIT: " + body[:300])
+                # Denemeler bitti ama bu DAKİKALIK bir limit → failover yerine tekrar denenebilir işaretle
+                raise RuntimeError("RATE_LIMIT_MINUTE: " + body[:200])
             resp.raise_for_status()
             content = resp.json()["choices"][0]["message"]["content"]
             content = re.sub(r"```json|```", "", content).strip()
@@ -501,7 +565,69 @@ def call_groq(text: str, api_key: str, model: str = "llama-3.1-8b-instant", max_
         raise RuntimeError("Groq API anahtarı girilmemiş.")
     return call_openai_compatible(text, api_key, model,
                                   base_url="https://api.groq.com/openai/v1",
-                                  char_limit=28000, max_retries=max_retries)
+                                  char_limit=14000, max_retries=max_retries)
+
+
+def call_claude(text: str, api_key: str, model: str = "claude-haiku-4-5-20251001", max_retries: int = 4) -> dict:
+    """Anthropic Claude API (en kaliteli, ücretli). Kendi mesaj formatını kullanır."""
+    if not api_key:
+        raise RuntimeError("Claude API anahtarı girilmemiş.")
+    url = "https://api.anthropic.com/v1/messages"
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+    payload = {
+        "model": model,
+        "max_tokens": 2000,
+        "temperature": 0.1,
+        "system": "Sen bir MSDS/SDS belge analiz uzmanısın. SADECE geçerli JSON döndür, başka metin yazma.",
+        "messages": [
+            {"role": "user", "content": OLLAMA_PROMPT.format(text=select_relevant_text(text, gemini_limit=60000))},
+        ],
+    }
+    last_err = None
+    for attempt in range(max_retries):
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=120)
+            if resp.status_code == 429:
+                body = resp.text
+                retry_after = resp.headers.get("retry-after") or resp.headers.get("Retry-After")
+                wait = 0.0
+                if retry_after:
+                    try:
+                        wait = min(65.0, float(retry_after) + 1)
+                    except ValueError:
+                        wait = 0.0
+                if not wait:
+                    wait = 20.0
+                if attempt < max_retries - 1:
+                    time.sleep(wait)
+                    continue
+                raise RuntimeError("RATE_LIMIT_MINUTE: " + body[:200])
+            resp.raise_for_status()
+            data = resp.json()
+            # Claude yanıtı: content[0].text
+            content = ""
+            for block in data.get("content", []):
+                if block.get("type") == "text":
+                    content += block.get("text", "")
+            content = re.sub(r"```json|```", "", content).strip()
+            return json.loads(content)
+        except json.JSONDecodeError:
+            raise
+        except RuntimeError:
+            raise
+        except Exception as e:
+            last_err = e
+            msg = str(e)
+            transient = any(c in msg for c in ["500", "502", "503", "504", "timeout", "Timeout", "529"])
+            if transient and attempt < max_retries - 1:
+                time.sleep(3 * (attempt + 1))
+                continue
+            raise
+    raise last_err
 
 
 def call_ollama(text: str, model: str, base_url: str) -> dict:
@@ -658,15 +784,17 @@ def infer_pictograms_from_text(data: dict) -> list:
 ENGINE_LABELS = {
     "groq": "⚡ Groq",
     "gemini": "☁️ Gemini",
-    "ollama": "🖥️ Ollama (yerel)",
     "openai": "🤖 OpenAI",
+    "claude": "🧠 Claude",
+    "ollama": "🖥️ Ollama (yerel)",
 }
 # Failover sırası: en yüksek günlük kapasiteden en düşüğe / yerele.
-FAILOVER_ORDER = ["groq", "gemini", "openai", "ollama"]
+FAILOVER_ORDER = ["groq", "gemini", "openai", "claude", "ollama"]
 
 
 def call_ai(text: str, engine: str, model: str, ollama_url: str = "",
-            gemini_api_key: str = "", groq_api_key: str = "", openai_api_key: str = "") -> dict:
+            gemini_api_key: str = "", groq_api_key: str = "", openai_api_key: str = "",
+            claude_api_key: str = "") -> dict:
     """Seçili AI motoruna göre tek bir çağrı noktası."""
     if engine == "gemini":
         data = call_gemini(text, gemini_api_key, model)
@@ -675,6 +803,8 @@ def call_ai(text: str, engine: str, model: str, ollama_url: str = "",
     elif engine == "openai":
         data = call_openai_compatible(text, openai_api_key, model,
                                       base_url="https://api.openai.com/v1")
+    elif engine == "claude":
+        data = call_claude(text, claude_api_key, model)
     else:
         data = call_ollama(text, model, ollama_url)
 
@@ -691,21 +821,24 @@ def call_ai(text: str, engine: str, model: str, ollama_url: str = "",
     return data
 
 
-def _is_quota_or_ratelimit_error(err: Exception) -> bool:
-    """Hatanın kota/rate-limit kaynaklı olup olmadığını (failover tetikleyici) anlar."""
+def _is_daily_exhausted_error(err: Exception) -> bool:
+    """Sadece GÜNLÜK kota bitişi mi? Bu durumda motor o gün tükenmiştir → failover'a geç."""
     msg = str(err).upper()
-    return any(k in msg for k in ["DAILY_QUOTA_EXHAUSTED", "RATE_LIMIT", "RESOURCE_EXHAUSTED",
-                                  "429", "QUOTA", "GÜNLÜK ÜCRETSIZ LIMIT", "RPD"])
+    return any(k in msg for k in ["DAILY_QUOTA_EXHAUSTED", "RESOURCE_EXHAUSTED",
+                                  "GÜNLÜK ÜCRETSIZ LIMIT", "RPD", "PER DAY", "REQUESTS PER DAY"])
+
+
+def _is_minute_limit_error(err: Exception) -> bool:
+    """Dakikalık limit (TPM/RPM) mi? Beklenip tekrar denenebilir, motor tükenmiş sayılmaz."""
+    msg = str(err).upper()
+    return "RATE_LIMIT_MINUTE" in msg or ("429" in msg and not _is_daily_exhausted_error(err))
 
 
 def analyze_with_failover(text, chain, models, keys, ollama_url, exhausted, on_switch=None):
-    """Metni zincirdeki (chain) motorlarla sırayla dener. Bir motor kota/limit yiyince
-    o motoru 'exhausted' kümesine ekler ve sıradaki motorla devam eder.
-    - chain: denenecek motor sırası, örn. ["groq","gemini","ollama"]
-    - models: {engine: model_adı}
-    - keys: {"gemini":..., "groq":..., "openai":...}
-    - exhausted: bu oturumda kotası dolmuş motorların kümesi (set) — paylaşımlı, güncellenir
-    - on_switch(eng): bir motora geçilince çağrılan bilgi callback'i
+    """Metni zincirdeki (chain) motorlarla sırayla dener.
+    - GÜNLÜK kota dolan motor 'exhausted'a eklenir, bir daha denenmez, sıradakine geçilir.
+    - DAKİKALIK limit (TPM/RPM) yiyen motor tükenmiş SAYILMAZ; call_* fonksiyonları zaten
+      bekleyip tekrar dener. Yine de takılırsa o dosyada sıradakine geçilir ama motor açık kalır.
     Döner: (data, kullanılan_engine). Hepsi tükenirse son hatayı yükseltir."""
     last_err = None
     for eng in chain:
@@ -720,18 +853,21 @@ def analyze_with_failover(text, chain, models, keys, ollama_url, exhausted, on_s
                 gemini_api_key=keys.get("gemini", ""),
                 groq_api_key=keys.get("groq", ""),
                 openai_api_key=keys.get("openai", ""),
+                claude_api_key=keys.get("claude", ""),
             )
             return data, eng
         except Exception as e:
             last_err = e
-            if _is_quota_or_ratelimit_error(e):
-                # Bu motorun kotası doldu → bu oturumda bir daha deneme, sıradakine geç
+            if _is_daily_exhausted_error(e):
+                # Günlük kota doldu → bu motoru oturum boyunca atla
                 exhausted.add(eng)
                 continue
+            elif _is_minute_limit_error(e):
+                # Dakikalık limit: bu dosyada sıradakini dene ama motoru tüketme (sonraki dosyada tekrar denenebilir)
+                continue
             else:
-                # Kota dışı hata (bozuk PDF, ağ vb.) → bu motorda bırak, üst katman ele alsın
+                # Kota dışı hata (bozuk PDF, ağ vb.) → üst katman ele alsın
                 raise
-    # Zincirdeki tüm motorlar tükendi
     if last_err:
         raise last_err
     raise RuntimeError("Kullanılabilir AI motoru yok (anahtar girilmemiş olabilir).")
@@ -932,17 +1068,18 @@ def main():
             "⚡ Groq — çok hızlı, yüksek ücretsiz limit",
             "☁️ Gemini — Google, ücretsiz",
             "🤖 OpenAI — ücretli",
+            "🧠 Claude — en kaliteli, ücretli",
             "🖥️ Ollama (yerel) — sınırsız, donanıma bağlı",
         ]
-        engine_keys = ["groq", "gemini", "openai", "ollama"]
-        default_idx = 3 if _local_ok else 0  # yerel varsa Ollama, yoksa Groq
+        engine_keys = ["groq", "gemini", "openai", "claude", "ollama"]
+        default_idx = 4 if _local_ok else 0  # yerel varsa Ollama, yoksa Groq
         engine_label = st.radio("Motor seç", engine_options, index=default_idx,
                                 label_visibility="collapsed")
         engine = engine_keys[engine_options.index(engine_label)]
 
         ollama_url = "http://localhost:11434"
         model = ""
-        gemini_api_key = groq_api_key = openai_api_key = ""
+        gemini_api_key = groq_api_key = openai_api_key = claude_api_key = ""
         ollama_ok = False
 
         if engine == "ollama":
@@ -973,9 +1110,7 @@ def main():
                      "70B: daha kaliteli, günde ~1.000 istek."
             )
             st.markdown('🔑 **Ücretsiz Groq anahtarı al** → [console.groq.com](https://console.groq.com/keys)')
-            groq_api_key = st.text_input("Groq API anahtarı", type="password",
-                                         placeholder="gsk_... (buraya yapıştır)",
-                                         help="Yalnızca bu oturumda kullanılır, kaydedilmez.")
+            st.caption("⚡ Groq anahtarını aşağıdaki **🔁 Otomatik yedekleme** bölümüne girin (kayıtlı kalır).")
             with st.expander("ℹ️ Neden Groq?"):
                 st.markdown(
                     "Groq ücretsiz katmanda **günde ~14.400 istek** verir (8B modelde) ve çok hızlıdır — "
@@ -987,10 +1122,16 @@ def main():
             model = st.selectbox("Model", ["gpt-4o-mini", "gpt-4o"],
                                  help="gpt-4o-mini: ucuz ve yeterli. gpt-4o: daha kaliteli, pahalı.")
             st.markdown('🔑 **OpenAI anahtarı** → [platform.openai.com](https://platform.openai.com/api-keys)')
-            openai_api_key = st.text_input("OpenAI API anahtarı", type="password",
-                                           placeholder="sk-... (buraya yapıştır)",
-                                           help="Yalnızca bu oturumda kullanılır. OpenAI ücretlidir.")
+            st.caption("🤖 OpenAI anahtarını aşağıdaki **🔁 Otomatik yedekleme** bölümüne girin (kayıtlı kalır).")
             st.caption("⚠️ OpenAI ücretlidir (ücretsiz katman yok). Düşük maliyet için gpt-4o-mini önerilir.")
+
+        elif engine == "claude":
+            model = st.selectbox("Model", ["claude-haiku-4-5-20251001", "claude-sonnet-4-6"],
+                                 help="Haiku: hızlı ve ucuz, bu iş için yeterli. Sonnet: daha kaliteli, pahalı.")
+            st.markdown('🔑 **Claude (Anthropic) anahtarı** → [console.anthropic.com](https://console.anthropic.com/settings/keys)')
+            st.caption("🧠 Claude anahtarını aşağıdaki **🔁 Otomatik yedekleme** bölümüne girin (kayıtlı kalır).")
+            st.caption("⚠️ Claude ücretlidir (ücretsiz katman yok). En kaliteli sonuç için; basit MSDS işinde "
+                       "Groq/Gemini de yeterlidir. Düşük maliyet için Haiku önerilir.")
 
         else:  # gemini
             if not GEMINI_SDK_OK:
@@ -999,9 +1140,7 @@ def main():
             model = st.selectbox("Model", ["gemini-2.5-flash-lite", "gemini-2.5-flash"],
                                  help="Flash-Lite: daha yüksek günlük limit. Flash: daha kaliteli ama düşük limit.")
             st.markdown('🔑 **Ücretsiz Gemini anahtarı** → [aistudio.google.com/apikey](https://aistudio.google.com/apikey)')
-            gemini_api_key = st.text_input("Gemini API anahtarı", type="password",
-                                           placeholder="AIza... (buraya yapıştır)",
-                                           help="Yalnızca bu oturumda kullanılır, kaydedilmez.")
+            st.caption("☁️ Gemini anahtarını aşağıdaki **🔁 Otomatik yedekleme** bölümüne girin (kayıtlı kalır).")
             with st.expander("ℹ️ Gemini ücretsiz limit — ÖNEMLİ"):
                 st.markdown(
                     "Gemini ücretsiz katman sınırı hesaba göre çok düşük olabilir (bazı hesaplarda günde "
@@ -1010,37 +1149,50 @@ def main():
                 )
 
         # ── Failover (otomatik motor geçişi) için TÜM anahtarlar ──
-        with st.expander("🔁 Otomatik yedekleme (failover) — toplu işlem için önerilir"):
+        with st.expander("🔑 API Anahtarları & Otomatik Yedekleme", expanded=True):
             st.caption(
-                "Toplu işlemde bir motorun kotası dolduğunda, kalan dosyalar **otomatik olarak** "
-                "sıradaki motorla devam eder (Groq → Gemini → OpenAI → Ollama). Kesintisiz çalışması "
-                "için kullanacağınız motorların anahtarlarını buraya girin. Boş bıraktıklarınız atlanır."
+                "**Kendi** API anahtarınızı girin. Anahtarınız yalnızca sizin oturumunuzda tutulur — "
+                "hiçbir yere kaydedilmez, başka kullanıcı göremez. Toplu işlemde bir motorun kotası "
+                "dolarsa kalan dosyalar **otomatik olarak** sıradaki motorla devam eder; bu yüzden "
+                "**birden fazla** motorun anahtarını girmeniz önerilir."
             )
-            fo_on = st.checkbox("Otomatik yedeklemeyi aç", value=True)
-            if fo_on:
-                if not groq_api_key:
-                    groq_api_key = st.text_input("⚡ Groq anahtarı (yedek)", type="password",
-                                                 placeholder="gsk_...", key="fo_groq")
-                if not gemini_api_key:
-                    gemini_api_key = st.text_input("☁️ Gemini anahtarı (yedek)", type="password",
-                                                   placeholder="AIza...", key="fo_gemini")
-                if not openai_api_key:
-                    openai_api_key = st.text_input("🤖 OpenAI anahtarı (yedek)", type="password",
-                                                   placeholder="sk-...", key="fo_openai")
+            st.markdown(
+                "**🔑 Ücretsiz/ücretli anahtar alma adresleri:**\n"
+                "- ⚡ **Groq** (ücretsiz, kredi kartsız, en yüksek limit): [console.groq.com/keys](https://console.groq.com/keys)\n"
+                "- ☁️ **Gemini** (ücretsiz): [aistudio.google.com/apikey](https://aistudio.google.com/apikey)\n"
+                "- 🤖 **OpenAI** (ücretli): [platform.openai.com/api-keys](https://platform.openai.com/api-keys)\n"
+                "- 🧠 **Claude** (ücretli): [console.anthropic.com](https://console.anthropic.com/settings/keys)"
+            )
+            st.markdown("**Her motorun anahtarını kendi kutusuna girin** (boş bıraktıklarınız atlanır):")
 
-        # Ortak anahtarlar (sahibi Secrets'a koyduysa)
-        for sk_name, var in [("GEMINI_API_KEY", "gemini"), ("GROQ_API_KEY", "groq"), ("OPENAI_API_KEY", "openai")]:
-            try:
-                val = st.secrets.get(sk_name, "")
-            except Exception:
-                val = ""
-            if val:
-                if var == "gemini" and not gemini_api_key:
-                    gemini_api_key = val
-                elif var == "groq" and not groq_api_key:
-                    groq_api_key = val
-                elif var == "openai" and not openai_api_key:
-                    openai_api_key = val
+            # Her motorun TEK ve KALICI kutusu — benzersiz key'ler sayesinde üst üste binmez.
+            # Seçili motorun anahtarı yukarıda zaten girildiyse, burada da aynı session değeri görünür.
+            groq_fo = st.text_input("⚡ Groq anahtarı", type="password", placeholder="gsk_...",
+                                    key="api_key_groq", help="Groq için. gsk_ ile başlar.")
+            gemini_fo = st.text_input("☁️ Gemini anahtarı", type="password", placeholder="AIza...",
+                                      key="api_key_gemini", help="Gemini için. AIza ile başlar.")
+            openai_fo = st.text_input("🤖 OpenAI anahtarı", type="password", placeholder="sk-...",
+                                      key="api_key_openai", help="OpenAI için. sk- ile başlar.")
+            claude_fo = st.text_input("🧠 Claude anahtarı", type="password", placeholder="sk-ant-...",
+                                      key="api_key_claude", help="Claude için. sk-ant- ile başlar.")
+
+            # Hangi anahtarların girildiğini özetle (kullanıcı net görsün)
+            girilenler = []
+            if groq_fo: girilenler.append("⚡ Groq")
+            if gemini_fo: girilenler.append("☁️ Gemini")
+            if openai_fo: girilenler.append("🤖 OpenAI")
+            if claude_fo: girilenler.append("🧠 Claude")
+            if girilenler:
+                st.success("✓ Kayıtlı anahtarlar: " + ", ".join(girilenler))
+            else:
+                st.info("Henüz anahtar girilmedi.")
+
+        # Tüm anahtarlar session_state'ten okunur — HER KULLANICI KENDİ anahtarını girer.
+        # (Anahtar diske/sunucuya yazılmaz, başka kullanıcıya geçmez, sadece bu oturumda yaşar.)
+        groq_api_key = st.session_state.get("api_key_groq", "") or ""
+        gemini_api_key = st.session_state.get("api_key_gemini", "") or ""
+        openai_api_key = st.session_state.get("api_key_openai", "") or ""
+        claude_api_key = st.session_state.get("api_key_claude", "") or ""
 
         st.divider()
         st.subheader("🏢 Kurumsal Şablon")
@@ -1050,7 +1202,7 @@ def main():
         co_color = st.color_picker("Tema rengi", "#1a237e")
 
         st.divider()
-        st.caption("⚗️ MSDS Özetleyici v1.2\nGroq + Gemini + OpenAI + Ollama · Otomatik yedekleme · Toplu işlem")
+        st.caption("⚗️ MSDS Özetleyici v1.3\nGroq + Gemini + OpenAI + Claude + Ollama · Otomatik yedekleme")
 
     company = {"name": co_name, "dept": co_dept, "color": co_color, "logo": None}
     if co_logo:
@@ -1063,6 +1215,7 @@ def main():
         "groq": groq_api_key,
         "gemini": gemini_api_key,
         "openai": openai_api_key,
+        "claude": claude_api_key,
         "ollama": "local" if ollama_ok else "",
     }
 
@@ -1086,6 +1239,7 @@ def main():
         "groq": "llama-3.1-8b-instant",
         "gemini": "gemini-2.5-flash-lite",
         "openai": "gpt-4o-mini",
+        "claude": "claude-haiku-4-5-20251001",
         "ollama": model if engine == "ollama" else "qwen2.5",
     }
     # Seçili motorun modelini onun varsayılanına yaz (kullanıcı ne seçtiyse)
@@ -1144,7 +1298,7 @@ def main():
                 with st.spinner(wait_msg):
                     try:
                         _chain = build_failover_chain(engine)
-                        _keys = {"gemini": gemini_api_key, "groq": groq_api_key, "openai": openai_api_key}
+                        _keys = {"gemini": gemini_api_key, "groq": groq_api_key, "openai": openai_api_key, "claude": claude_api_key}
                         _exhausted = set()
                         result, _used = analyze_with_failover(
                             pdf_text, _chain, default_models, _keys, ollama_url, _exhausted
@@ -1208,7 +1362,8 @@ def main():
     with tab_batch:
         st.markdown(
             "Yüzlerce PDF'i tek seferde sıraya koyup işleyebilirsin. "
-            "Bittiğinde tek bir **Excel özeti** ve istersen tüm **HTML/JSON kartlarının ZIP'i** olarak indirebilirsin."
+            "Yüzlerce PDF'i tek seferde sıraya koyup işleyebilirsin. Bittiğinde her ürünün "
+            "**kartını tek tek açabilir**, ya da tüm kartları **HTML/JSON ZIP** olarak indirebilirsin."
         )
         # Aktif failover zincirini göster
         _chain_preview = build_failover_chain(engine)
@@ -1250,7 +1405,7 @@ def main():
                 # Failover zinciri ve paylaşımlı durum
                 chain = build_failover_chain(engine)
                 exhausted = set()           # bu oturumda kotası dolan motorlar
-                keys = {"gemini": gemini_api_key, "groq": groq_api_key, "openai": openai_api_key}
+                keys = {"gemini": gemini_api_key, "groq": groq_api_key, "openai": openai_api_key, "claude": claude_api_key}
                 current_engine = {"val": chain[0] if chain else engine}
 
                 def _on_switch(eng):
@@ -1321,18 +1476,60 @@ def main():
             results = st.session_state["batch_results"]
             st.divider()
             st.subheader("📊 Sonuçlar")
+            st.caption("✅ Tamamlanan ürünlerin **'Kartı Aç'** butonuna basınca özet kartı yeni pencerede açılır (oradan Yazdır/PDF yapabilirsiniz).")
 
-            table_rows = []
-            for r in results:
+            for i, r in enumerate(results):
+                col_name, col_status, col_btn = st.columns([3, 2, 1.4])
                 if "error" in r:
-                    table_rows.append({"Dosya": r["filename"], "Ürün Adı": "—", "Durum": f"❌ {r['error']}"})
+                    with col_name:
+                        st.markdown(f"📄 {r['filename']}")
+                    with col_status:
+                        # Uzun hata mesajını kısalt
+                        emsg = r["error"]
+                        short = "Kota doldu" if ("kota" in emsg.lower() or "limit" in emsg.lower() or "quota" in emsg.lower()) else \
+                                ("Metin çıkarılamadı" if "Metin" in emsg else "Hata")
+                        st.markdown(f"<span style='color:#c00;'>❌ {short}</span>", unsafe_allow_html=True)
+                    with col_btn:
+                        st.write("")
                 else:
-                    table_rows.append({
-                        "Dosya": r["filename"],
-                        "Ürün Adı": r["data"].get("urun_adi") or "—",
-                        "Durum": "✅ Tamam"
-                    })
-            st.dataframe(table_rows, use_container_width=True, hide_index=True)
+                    urun = (r.get("data") or {}).get("urun_adi") or r["filename"]
+                    with col_name:
+                        st.markdown(f"📄 **{urun}**")
+                    with col_status:
+                        eng_lbl = ENGINE_LABELS.get(r.get("engine", ""), "")
+                        st.markdown(f"<span style='color:#2e7d32;'>✅ Tamam</span>"
+                                    + (f" <span style='color:#999;font-size:11px;'>· {eng_lbl}</span>" if eng_lbl else ""),
+                                    unsafe_allow_html=True)
+                    with col_btn:
+                        if st.button("🖼️ Kartı Aç", key=f"open_card_{i}", use_container_width=True):
+                            st.session_state["open_card_idx"] = i
+
+            # Tıklanan kartı yeni pencerede açan JS (components.html ile)
+            if "open_card_idx" in st.session_state:
+                idx = st.session_state.pop("open_card_idx")
+                if 0 <= idx < len(results) and "html" in results[idx]:
+                    card_html = results[idx]["html"]
+                    prod = safe_filename((results[idx].get("data") or {}).get("urun_adi")
+                                         or results[idx]["filename"].replace(".pdf", ""))
+                    # Kartı yeni pencerede aç
+                    js_open = f"""
+                    <script>
+                    (function(){{
+                        var html = {json.dumps(card_html)};
+                        var w = window.open("", "_blank");
+                        if (w) {{
+                            w.document.open();
+                            w.document.write(html);
+                            w.document.close();
+                            try {{ w.document.title = {json.dumps(prod)}; }} catch(e){{}}
+                        }} else {{
+                            alert("Açılır pencere engellendi. Lütfen bu site için pop-up'a izin verin.");
+                        }}
+                    }})();
+                    </script>
+                    """
+                    components.html(js_open, height=0)
+                    st.caption(f"🪟 **{prod}** kartı yeni pencerede açıldı. (Açılmadıysa tarayıcınızın pop-up iznini kontrol edin.)")
 
             # Hatalı dosyaları sadece onları tekrar dene
             err_indices = [i for i, r in enumerate(results) if "error" in r]
@@ -1343,7 +1540,7 @@ def main():
                     rstatus = st.empty()
                     rchain = build_failover_chain(engine)
                     rexhausted = set()
-                    rkeys = {"gemini": gemini_api_key, "groq": groq_api_key, "openai": openai_api_key}
+                    rkeys = {"gemini": gemini_api_key, "groq": groq_api_key, "openai": openai_api_key, "claude": claude_api_key}
                     for n, i in enumerate(err_indices):
                         rec = results[i]
                         rstatus.write(f"Tekrar deneniyor: **{rec['filename']}** ({n + 1}/{len(err_indices)})")
@@ -1372,17 +1569,9 @@ def main():
                     st.session_state["batch_results"] = results
                     st.rerun()
 
-            c1, c2, c3 = st.columns(3)
+            # Toplu indirme: HTML ve JSON ZIP (Excel kaldırıldı — istek üzerine)
+            c1, c2 = st.columns(2)
             with c1:
-                excel_bytes = build_excel_summary(results)
-                st.download_button(
-                    "📊 Excel Özeti İndir (Tüm Sonuçlar)",
-                    data=excel_bytes,
-                    file_name=f"msds_toplu_ozet_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
-                )
-            with c2:
                 zip_buf = io.BytesIO()
                 with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
                     for r in results:
@@ -1396,7 +1585,7 @@ def main():
                     mime="application/zip",
                     use_container_width=True
                 )
-            with c3:
+            with c2:
                 zip_buf2 = io.BytesIO()
                 with zipfile.ZipFile(zip_buf2, "w", zipfile.ZIP_DEFLATED) as zf:
                     for r in results:
