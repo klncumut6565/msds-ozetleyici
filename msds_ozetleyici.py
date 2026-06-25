@@ -460,34 +460,14 @@ JSON ŞEMASI:
 
 
 def select_relevant_text(text: str, gemini_limit: int = 60000) -> str:
-    """Uzun MSDS belgelerinde tüm metni körü körüne kesmek yerine, ürün kimliğinin
-    olduğu BAŞ kısmı ile taşıma bilgilerinin olduğu BÖLÜM 14 çevresini birlikte tutar.
-    Böylece UN numarası, ADR sınıfı gibi sonlardaki bilgiler kaybolmaz."""
-    if len(text) <= gemini_limit:
-        return text
+    """KIRPMA YAPILMAZ — belge metni HER ZAMAN tam haliyle döner.
+    Kullanıcı talebi: hiçbir bölüm (depolama, bertaraf, taşımacılık vb.) kırpılmasın.
+    Çok uzun belgeler için Groq yerine Gemini/Claude (yüksek kapasiteli) kullanılması önerilir;
+    Groq'ta sığmazsa 413 yakalanıp daha büyük motora failover devreye girer.
+    (gemini_limit parametresi geriye dönük uyumluluk için tutuluyor ama artık kırpmaz.)"""
+    return text
 
-    # Bölüm 14 / Taşımacılık başlığını bul (farklı yazımlara karşı dayanıklı)
-    lower = text.lower()
-    markers = ["bölüm 14", "bolum 14", "section 14", "14. taşı", "14.1", "taşımacılık bilgileri",
-               "transport information", "un numara", "un no", "adr/rid"]
-    pos = -1
-    for mk in markers:
-        p = lower.find(mk)
-        if p != -1:
-            pos = p
-            break
 
-    head = text[:gemini_limit // 2]  # belgenin başı (kimlik, GHS, fiziksel, ilk yardım)
-    if pos == -1:
-        # Bölüm 14 bulunamadıysa baş + son'u birleştir (son sayfalarda olabilir)
-        tail = text[-(gemini_limit // 2):]
-        return head + "\n\n[...ARA KISIM ATLANDI...]\n\n" + tail
-
-    # Bölüm 14 çevresinden geniş bir pencere al
-    sec_start = max(0, pos - 500)
-    sec_end = min(len(text), pos + gemini_limit // 2)
-    section14 = text[sec_start:sec_end]
-    return head + "\n\n[...ARA KISIM ATLANDI...]\n\n" + section14
 
 
 def call_openai_compatible(text: str, api_key: str, model: str, base_url: str,
@@ -516,12 +496,10 @@ def call_openai_compatible(text: str, api_key: str, model: str, base_url: str,
     for attempt in range(max_retries):
         try:
             resp = requests.post(url, headers=headers, json=_build_payload(cur_limit), timeout=120)
-            # 413: istek çok büyük → metni yarıya indirip tekrar dene
+            # 413: belge bu motora sığmıyor → KIRPMA YOK, daha büyük motora failover et
             if resp.status_code == 413:
-                if cur_limit > 3000:
-                    cur_limit = max(3000, cur_limit // 2)
-                    continue
-                raise RuntimeError("PAYLOAD_TOO_LARGE: Belge metni motorun kabul ettiğinden büyük.")
+                raise RuntimeError("PAYLOAD_TOO_LARGE: Belge bu motor için çok büyük — "
+                                   "daha yüksek kapasiteli motora geçiliyor (kırpma yapılmaz).")
             if resp.status_code == 429:
                 body = resp.text
                 retry_after = resp.headers.get("retry-after") or resp.headers.get("Retry-After")
@@ -563,10 +541,10 @@ def call_openai_compatible(text: str, api_key: str, model: str, base_url: str,
         except Exception as e:
             last_err = e
             msg = str(e)
-            # 413 requests.HTTPError olarak da gelebilir
-            if "413" in msg and cur_limit > 3000:
-                cur_limit = max(3000, cur_limit // 2)
-                continue
+            # 413 requests.HTTPError olarak gelirse → KIRPMA YOK, failover tetikle
+            if "413" in msg:
+                raise RuntimeError("PAYLOAD_TOO_LARGE: Belge bu motor için çok büyük — "
+                                   "daha yüksek kapasiteli motora geçiliyor (kırpma yapılmaz).")
             transient = any(c in msg for c in ["500", "502", "503", "504", "timeout", "Timeout"])
             if transient and attempt < max_retries - 1:
                 time.sleep(3 * (attempt + 1))
@@ -576,15 +554,15 @@ def call_openai_compatible(text: str, api_key: str, model: str, base_url: str,
 
 
 def call_groq(text: str, api_key: str, model: str = "llama-3.1-8b-instant", max_retries: int = 6) -> dict:
-    """Groq API (OpenAI-uyumlu, çok hızlı). 8B modelin dakikalık token limiti (TPM=6000) düşük
-    olduğu için metni kısa tutuyoruz (MSDS özeti için baş + Bölüm 14 yeterli)."""
+    """Groq API (OpenAI-uyumlu, çok hızlı). Metin KIRPILMAZ — tam belge gönderilir.
+    Belge Groq'a sığmazsa 413 alınır ve otomatik olarak daha büyük motora (Gemini/Claude) geçilir."""
     if not api_key:
         raise RuntimeError("Groq API anahtarı girilmemiş.")
-    # 8B: TPM 6000 → ~9000 karakter güvenli. 70B: TPM 12000 → ~16000 karakter.
-    climit = 16000 if "70b" in model.lower() else 9000
+    # char_limit artık kırpma için kullanılmıyor (select_relevant_text tam metni döndürür),
+    # sadece imza uyumluluğu için yüksek bir değer veriyoruz.
     return call_openai_compatible(text, api_key, model,
                                   base_url="https://api.groq.com/openai/v1",
-                                  char_limit=climit, max_retries=max_retries)
+                                  char_limit=999999, max_retries=max_retries)
 
 
 def call_claude(text: str, api_key: str, model: str = "claude-haiku-4-5-20251001", max_retries: int = 4) -> dict:
@@ -841,9 +819,10 @@ def call_ai(text: str, engine: str, model: str, ollama_url: str = "",
 
 
 def _is_daily_exhausted_error(err: Exception) -> bool:
-    """Sadece GÜNLÜK kota bitişi mi? Bu durumda motor o gün tükenmiştir → failover'a geç."""
+    """Bu motoru atlamamız gereken durumlar: GÜNLÜK kota bitişi VEYA belge bu motora sığmıyor (413).
+    Her ikisinde de aynı motoru tekrar denemek anlamsız → failover ile sıradaki motora geç."""
     msg = str(err).upper()
-    return any(k in msg for k in ["DAILY_QUOTA_EXHAUSTED", "RESOURCE_EXHAUSTED",
+    return any(k in msg for k in ["DAILY_QUOTA_EXHAUSTED", "RESOURCE_EXHAUSTED", "PAYLOAD_TOO_LARGE",
                                   "GÜNLÜK ÜCRETSIZ LIMIT", "RPD", "PER DAY", "REQUESTS PER DAY"])
 
 
@@ -885,10 +864,10 @@ def diagnose_error(err_msg: str) -> dict:
         return {
             "kaynak": "🤖 AI Motoru (boyut)",
             "etiket": "Belge çok büyük",
-            "aciklama": "Bu MSDS'in metni, AI motorunun tek seferde kabul ettiğinden büyük. "
-                        "Uygulama metni otomatik küçültüp tekrar dener; yine de sığmadıysa belge çok uzun demektir.",
-            "cozum": "Daha yüksek kapasiteli bir motor deneyin (Gemini veya OpenAI, Groq'tan daha büyük belge kabul eder), "
-                     "ya da bu belgeyi tek tek analiz sekmesinde işleyin. Bu bir motor boyut sınırı — uygulama hatası değil.",
+            "aciklama": "Bu MSDS'in metni, bu AI motorunun tek seferde kabul ettiğinden büyük. "
+                        "Belge KIRPILMADI — bunun yerine daha yüksek kapasiteli motora geçilmeye çalışıldı.",
+            "cozum": "Bu belge için Gemini veya Claude motorunu kullanın (Groq'tan çok daha büyük belge kabul ederler). "
+                     "Anahtarlarını girerseniz otomatik yedekleme bu büyük belgeleri onlara yönlendirir. Bilgi kaybı olmaz.",
         }
 
     # ── MOTOR kaynaklı: dakikalık limit ──
