@@ -500,26 +500,32 @@ def select_relevant_text(text: str, gemini_limit: int = 60000) -> str:
 
 
 def call_openai_compatible(text: str, api_key: str, model: str, base_url: str,
-                            char_limit: int = 30000, max_retries: int = 4) -> dict:
-    """OpenAI-uyumlu sohbet API'ları için ortak çağrı (Groq, OpenAI, vb.).
-    Groq endpoint'i: https://api.groq.com/openai/v1
+                            char_limit: int = 30000, max_retries: int = 4,
+                            extra_headers: dict = None) -> dict:
+    """OpenAI-uyumlu sohbet API'ları için ortak çağrı (Groq, OpenAI, OpenRouter, vb.).
     Geçici hatalarda (429/500/503) Retry-After'a göre bekleyip tekrar dener.
-    413 (Payload Too Large) gelirse metni küçültüp yeniden dener."""
+    413 → failover. 400 (bazı OpenRouter ücretsiz modelleri json_object desteklemez) →
+    response_format olmadan tekrar dener."""
     url = f"{base_url.rstrip('/')}/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    if extra_headers:
+        headers.update(extra_headers)
 
     cur_limit = char_limit  # 413 alırsak bu küçülür
+    use_json_format = True   # 400 alırsak kapatıp tekrar deneriz
 
     def _build_payload(limit):
-        return {
+        p = {
             "model": model,
             "messages": [
                 {"role": "system", "content": "Sen bir MSDS/SDS belge analiz uzmanısın. SADECE geçerli JSON döndür."},
                 {"role": "user", "content": OLLAMA_PROMPT.format(text=select_relevant_text(text, gemini_limit=limit))},
             ],
             "temperature": 0.1,
-            "response_format": {"type": "json_object"},
         }
+        if use_json_format:
+            p["response_format"] = {"type": "json_object"}
+        return p
 
     last_err = None
     for attempt in range(max_retries):
@@ -559,6 +565,22 @@ def call_openai_compatible(text: str, api_key: str, model: str, base_url: str,
                     continue
                 # Denemeler bitti ama bu DAKİKALIK bir limit → failover yerine tekrar denenebilir işaretle
                 raise RuntimeError("RATE_LIMIT_MINUTE: " + body[:200])
+            # 404: model adı geçersiz/kullanımdan kalkmış (özellikle OpenRouter ücretsiz modelleri)
+            if resp.status_code == 404:
+                raise RuntimeError(f"MODEL_NOT_FOUND: '{model}' modeli bulunamadı. Model adı geçersiz "
+                                   "veya artık ücretsiz değil. 'openrouter/free' seçin veya "
+                                   "openrouter.ai/models'tan güncel bir model adı alın.")
+            # 400: bazı modeller response_format json_object desteklemez → kapat ve tekrar dene
+            if resp.status_code == 400:
+                if use_json_format:
+                    use_json_format = False
+                    continue   # aynı attempt'i json_format olmadan tekrar dene
+                # json_format zaten kapalıysa, gerçek 400 hatasını göster
+                try:
+                    err_detail = resp.json().get("error", {}).get("message", "") or resp.text[:200]
+                except Exception:
+                    err_detail = resp.text[:200]
+                raise RuntimeError(f"BAD_REQUEST_400: {err_detail}")
             resp.raise_for_status()
             content = resp.json()["choices"][0]["message"]["content"]
             content = re.sub(r"```json|```", "", content).strip()
@@ -606,16 +628,33 @@ def call_groq(text: str, api_key: str, model: str = "llama-3.3-70b-versatile", m
         raise
 
 
-def call_openrouter(text: str, api_key: str, model: str = "meta-llama/llama-4-maverick:free",
+def call_openrouter(text: str, api_key: str, model: str = "openrouter/free",
                     max_retries: int = 5) -> dict:
     """OpenRouter API (OpenAI-uyumlu). Tek anahtarla onlarca modele erişim; ücretsiz modeller var.
-    Uzun belgeler için ideal: ücretsiz Llama 4 Maverick 1M token context sunar (kırpma gerekmez).
-    Ücretsiz katman ~20 istek/dakika, ~200 istek/gün."""
+    Varsayılan 'openrouter/free' o an çalışan bir ücretsiz modeli otomatik seçer (model adı eskimez).
+    Ücretsiz katman ~20 istek/dakika, ~50-200 istek/gün."""
     if not api_key:
         raise RuntimeError("OpenRouter API anahtarı girilmemiş.")
-    return call_openai_compatible(text, api_key, model,
-                                  base_url="https://openrouter.ai/api/v1",
-                                  char_limit=999999, max_retries=max_retries)
+    # Güvenlik ağı: model boş veya bilinen eski/geçersiz adlardan biriyse en güvenilir seçeneğe düş.
+    _stale = ("llama-4-maverick", "gemini-2.0-flash-exp", "deepseek-chat-v3.1", "llama-3.3-70b:free")
+    if not model or any(s in model for s in _stale):
+        model = "openrouter/free"
+
+    def _try(mdl):
+        return call_openai_compatible(text, api_key, mdl,
+                                      base_url="https://openrouter.ai/api/v1",
+                                      char_limit=999999, max_retries=max_retries,
+                                      extra_headers={
+                                          "HTTP-Referer": "https://msds-ozetleyici.streamlit.app",
+                                          "X-Title": "MSDS Ozetleyici",
+                                      })
+    try:
+        return _try(model)
+    except RuntimeError as e:
+        # Seçilen model bulunamadıysa (404) ve henüz openrouter/free denenmediyse → ona düş
+        if "MODEL_NOT_FOUND" in str(e) and model != "openrouter/free":
+            return _try("openrouter/free")
+        raise
 
 
 def call_claude(text: str, api_key: str, model: str = "claude-haiku-4-5-20251001", max_retries: int = 4) -> dict:
@@ -892,10 +931,11 @@ def call_ai(text: str, engine: str, model: str, ollama_url: str = "",
 
 
 def _is_daily_exhausted_error(err: Exception) -> bool:
-    """Bu motoru atlamamız gereken durumlar: GÜNLÜK kota bitişi VEYA belge bu motora sığmıyor (413).
-    Her ikisinde de aynı motoru tekrar denemek anlamsız → failover ile sıradaki motora geç."""
+    """Bu motoru atlamamız gereken durumlar: GÜNLÜK kota bitişi, belge sığmıyor (413),
+    veya model bulunamadı (404). Hepsinde aynı motoru tekrar denemek anlamsız → failover."""
     msg = str(err).upper()
     return any(k in msg for k in ["DAILY_QUOTA_EXHAUSTED", "RESOURCE_EXHAUSTED", "PAYLOAD_TOO_LARGE",
+                                  "MODEL_NOT_FOUND", "BAD_REQUEST_400",
                                   "GÜNLÜK ÜCRETSIZ LIMIT", "RPD", "PER DAY", "REQUESTS PER DAY"])
 
 
@@ -920,6 +960,18 @@ def diagnose_error(err_msg: str) -> dict:
                         "(içindeki yazılar resim halinde).",
             "cozum": "Bu dosya metin tabanlı değil. Çözüm: orijinal (dijital) PDF'i kullanın ya da "
                      "OCR ile metne çevirin. Bu, AI motoruyla ilgili DEĞİL — dosyanın kendisiyle ilgili.",
+        }
+
+    # ── MODEL bulunamadı (404) — özellikle OpenRouter ücretsiz modelleri ──
+    if "model_not_found" in low or "bad_request_400" in low:
+        return {
+            "kaynak": "🤖 AI Motoru (model)",
+            "etiket": "Model bulunamadı/geçersiz",
+            "aciklama": "Seçilen model adı geçersiz, kullanımdan kalkmış veya artık ücretsiz değil. "
+                        "OpenRouter ücretsiz model listesi sık değişir.",
+            "cozum": "OpenRouter modelini **'openrouter/free'** olarak seçin (her zaman çalışan ücretsiz "
+                     "modeli otomatik seçer). Ya da openrouter.ai/models adresinden güncel bir :free model "
+                     "adı alın. Bu, motor anahtarıyla değil model adıyla ilgili.",
         }
 
     # ── MOTOR kaynaklı: istek çok büyük (413/payload) — günlük kotadan ÖNCE ──
@@ -1311,20 +1363,22 @@ def main():
         elif engine == "openrouter":
             model = st.selectbox(
                 "Model",
-                ["meta-llama/llama-4-maverick:free", "deepseek/deepseek-chat-v3.1:free",
-                 "meta-llama/llama-3.3-70b:free", "google/gemini-2.0-flash-exp:free"],
-                help="Maverick (önerilen): 1M token context, uzun MSDS belgeleri için ideal, ücretsiz. "
-                     "Diğerleri de ücretsiz (:free). Listede olmayan modelleri elle de yazabilirsiniz."
+                ["openrouter/free", "deepseek/deepseek-r1:free", "qwen/qwen3-coder:free",
+                 "meta-llama/llama-3.3-70b-instruct:free", "openai/gpt-oss-20b:free"],
+                help="openrouter/free (önerilen): her zaman çalışan ücretsiz modeli otomatik seçer "
+                     "(model adı eskimez). Diğerleri belirli ücretsiz modeller. Çalışmayan olursa "
+                     "openrouter/free seçin — en güvenilirdir."
             )
             st.markdown('🔑 **Ücretsiz OpenRouter anahtarı** → [openrouter.ai/keys](https://openrouter.ai/keys)')
             st.caption("🌐 OpenRouter anahtarını aşağıdaki **🔁 Otomatik yedekleme** bölümüne girin (kayıtlı kalır).")
             with st.expander("ℹ️ Neden OpenRouter?"):
                 st.markdown(
                     "OpenRouter tek anahtarla onlarca modele erişim verir ve **ücretsiz** modeller içerir "
-                    "(kredi kartı gerekmez). Uzun MSDS belgeleri için **Llama 4 Maverick** ücretsiz modeli "
-                    "1 milyon token context sunar — Gemini Flash-Lite veya Groq yetersiz kaldığında ideal. "
-                    "Ücretsiz katman: ~20 istek/dakika, ~200 istek/gün. Anahtar: "
-                    "[openrouter.ai/keys](https://openrouter.ai/keys) (e-posta ile kayıt, kart yok)."
+                    "(kredi kartı gerekmez). **openrouter/free** seçeneği, o an çalışan bir ücretsiz modeli "
+                    "otomatik seçer — model adları haftalık değiştiği için en güvenilir seçenek budur. "
+                    "Ücretsiz katman: ~20 istek/dakika, ~50-200 istek/gün. Anahtar: "
+                    "[openrouter.ai/keys](https://openrouter.ai/keys) (e-posta ile kayıt, kart yok). "
+                    "Belirli bir model 404 verirse, güncel listeyi openrouter.ai/models adresinden kontrol edin."
                 )
 
         elif engine == "openai":
@@ -1459,7 +1513,7 @@ def main():
     default_models = {
         "groq": "llama-3.3-70b-versatile",
         "gemini": "gemini-2.5-flash-lite",
-        "openrouter": "meta-llama/llama-4-maverick:free",
+        "openrouter": "openrouter/free",
         "openai": "gpt-4o-mini",
         "claude": "claude-haiku-4-5-20251001",
         "ollama": model if engine == "ollama" else "qwen2.5",
