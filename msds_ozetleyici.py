@@ -559,13 +559,16 @@ def call_openai_compatible(text: str, api_key: str, model: str, base_url: str,
     raise last_err
 
 
-def call_groq(text: str, api_key: str, model: str = "llama-3.1-8b-instant", max_retries: int = 4) -> dict:
-    """Groq API (OpenAI-uyumlu, çok hızlı, cömert ücretsiz katman)."""
+def call_groq(text: str, api_key: str, model: str = "llama-3.1-8b-instant", max_retries: int = 6) -> dict:
+    """Groq API (OpenAI-uyumlu, çok hızlı). 8B modelin dakikalık token limiti (TPM=6000) düşük
+    olduğu için metni kısa tutuyoruz (MSDS özeti için baş + Bölüm 14 yeterli)."""
     if not api_key:
         raise RuntimeError("Groq API anahtarı girilmemiş.")
+    # 8B: TPM 6000 → ~9000 karakter güvenli. 70B: TPM 12000 → ~16000 karakter.
+    climit = 16000 if "70b" in model.lower() else 9000
     return call_openai_compatible(text, api_key, model,
                                   base_url="https://api.groq.com/openai/v1",
-                                  char_limit=14000, max_retries=max_retries)
+                                  char_limit=climit, max_retries=max_retries)
 
 
 def call_claude(text: str, api_key: str, model: str = "claude-haiku-4-5-20251001", max_retries: int = 4) -> dict:
@@ -832,6 +835,92 @@ def _is_minute_limit_error(err: Exception) -> bool:
     """Dakikalık limit (TPM/RPM) mi? Beklenip tekrar denenebilir, motor tükenmiş sayılmaz."""
     msg = str(err).upper()
     return "RATE_LIMIT_MINUTE" in msg or ("429" in msg and not _is_daily_exhausted_error(err))
+
+
+def diagnose_error(err_msg: str) -> dict:
+    """Bir hata mesajını analiz edip kaynağını belirler.
+    Döner: {kaynak, etiket, aciklama, cozum} — kullanıcıya nerede sorun olduğunu net gösterir."""
+    m = str(err_msg)
+    low = m.lower()
+
+    # ── DOSYA kaynaklı (uygulama PDF'i okuyamadı) ──
+    if "metin çıkar" in low or "taranmış" in low or "görsel pdf" in low:
+        return {
+            "kaynak": "📄 PDF Dosyası",
+            "etiket": "PDF okunamadı",
+            "aciklama": "Bu PDF'ten metin çıkarılamadı. Muhtemelen taranmış/görsel bir belge "
+                        "(içindeki yazılar resim halinde).",
+            "cozum": "Bu dosya metin tabanlı değil. Çözüm: orijinal (dijital) PDF'i kullanın ya da "
+                     "OCR ile metne çevirin. Bu, AI motoruyla ilgili DEĞİL — dosyanın kendisiyle ilgili.",
+        }
+
+    # ── MOTOR kaynaklı: günlük kota ──
+    if _is_daily_exhausted_error(Exception(m)):
+        return {
+            "kaynak": "🤖 AI Motoru (kota)",
+            "etiket": "Günlük kota doldu",
+            "aciklama": "Seçtiğiniz AI motorunun GÜNLÜK ücretsiz istek limiti dolmuş.",
+            "cozum": "Başka bir motorun anahtarını da girin (otomatik yedekleme devralır), ya da "
+                     "ertesi gün tekrar deneyin. Bu, uygulamayla ilgili DEĞİL — motorun limitiyle ilgili.",
+        }
+
+    # ── MOTOR kaynaklı: dakikalık limit ──
+    if "rate_limit_minute" in low or "tpm" in low or "rpm" in low or "rate limit" in low or "429" in m:
+        return {
+            "kaynak": "🤖 AI Motoru (hız)",
+            "etiket": "Dakikalık limit",
+            "aciklama": "AI motoru kısa sürede çok istek aldı (dakikalık token/istek sınırı). "
+                        "Özellikle Groq 8B modelinde uzun MSDS'lerde sık görülür.",
+            "cozum": "Otomatik tekrar deneme devrede. Sürerse: Groq'ta 70B modeli seçin (daha yüksek "
+                     "limit) veya ikinci bir motor anahtarı girin. Bu motorun hız sınırı — uygulama hatası değil.",
+        }
+
+    # ── MOTOR/AĞ kaynaklı: bağlantı ──
+    if "timeout" in low or "connection" in low or "ağ" in low or "network" in low or "max retries" in low:
+        return {
+            "kaynak": "🌐 Bağlantı / Ağ",
+            "etiket": "Bağlantı hatası",
+            "aciklama": "AI motoruna ulaşılamadı (internet veya sunucu geçici sorunu).",
+            "cozum": "İnternet bağlantınızı kontrol edip tekrar deneyin. Geçici bir durum olabilir.",
+        }
+
+    # ── MOTOR kalitesi kaynaklı: bozuk JSON ──
+    if "json" in low or "expecting" in low or "delimiter" in low:
+        return {
+            "kaynak": "🤖 AI Motoru (yanıt)",
+            "etiket": "Yanıt biçimi hatası",
+            "aciklama": "AI motoru geçerli JSON döndürmedi (bazı küçük/hızlı modeller ara sıra bozuk "
+                        "yanıt verir).",
+            "cozum": "Bu dosyayı tekrar deneyin (çoğu zaman ikinci denemede düzelir) ya da daha güçlü "
+                     "bir model seçin (örn. Groq 70B, Gemini, OpenAI). Motorun yanıt kalitesiyle ilgili.",
+        }
+
+    # ── Anahtar eksik ──
+    if "anahtar" in low or "api key" in low or "unauthorized" in low or "401" in m or "403" in m:
+        return {
+            "kaynak": "🔑 API Anahtarı",
+            "etiket": "Anahtar sorunu",
+            "aciklama": "API anahtarı girilmemiş veya geçersiz/yetkisiz.",
+            "cozum": "Sol menüden doğru anahtarı girdiğinizden emin olun (Groq gsk_, Gemini AIza, "
+                     "OpenAI sk-, Claude sk-ant- ile başlar).",
+        }
+
+    # ── Tüm motorlar tükendi ──
+    if "tüm motor" in low:
+        return {
+            "kaynak": "🤖 AI Motoru (kota)",
+            "etiket": "Tüm motorlar doldu",
+            "aciklama": "Girdiğiniz tüm AI motorlarının kotası doldu.",
+            "cozum": "Daha fazla motor anahtarı girin (Groq ücretsiz, en yüksek limit) ya da yarın deneyin.",
+        }
+
+    # ── Bilinmeyen ──
+    return {
+        "kaynak": "❓ Bilinmeyen",
+        "etiket": "Beklenmeyen hata",
+        "aciklama": "Sınıflandırılamayan bir hata oluştu.",
+        "cozum": "Aşağıdaki teknik mesajı kopyalayıp tekrar deneyin. Sürerse desteğe iletin.",
+    }
 
 
 def analyze_with_failover(text, chain, models, keys, ollama_url, exhausted, on_switch=None):
@@ -1476,21 +1565,41 @@ def main():
             results = st.session_state["batch_results"]
             st.divider()
             st.subheader("📊 Sonuçlar")
-            st.caption("✅ Tamamlanan ürünlerin **'Kartı Aç'** butonuna basınca özet kartı yeni pencerede açılır (oradan Yazdır/PDF yapabilirsiniz).")
+
+            # Başarı/hata özeti — hataları KAYNAĞINA göre grupla (uygulama mı, motor mu, dosya mı?)
+            ok_n = sum(1 for r in results if "error" not in r)
+            err_list = [r for r in results if "error" in r]
+            if err_list:
+                from collections import Counter
+                kaynak_say = Counter(diagnose_error(r["error"])["kaynak"] for r in err_list)
+                ozet = " · ".join(f"{k}: {v}" for k, v in kaynak_say.items())
+                st.markdown(f"**✅ {ok_n} başarılı · ❌ {len(err_list)} hatalı**")
+                st.info(f"Hataların kaynak dağılımı → {ozet}\n\n"
+                        "Her hatalı satırdaki **'ℹ️ Neden?'** butonuna basarak o dosyanın sorununu ve "
+                        "çözümünü görebilirsiniz. (📄 = dosya sorunu, 🤖 = AI motoru, 🔑 = anahtar, 🌐 = bağlantı)")
+            else:
+                st.success(f"✅ Tüm {ok_n} dosya başarıyla işlendi!")
+
+            st.caption("✅ Tamamlanan ürünlerin **'Kartı Aç'** bağlantısına tıklayınca özet kartı yeni sekmede açılır (oradan tarayıcının Yazdır/PDF özelliğini kullanabilirsiniz).")
 
             for i, r in enumerate(results):
                 col_name, col_status, col_btn = st.columns([3, 2, 1.4])
                 if "error" in r:
+                    diag = diagnose_error(r["error"])
                     with col_name:
                         st.markdown(f"📄 {r['filename']}")
                     with col_status:
-                        # Uzun hata mesajını kısalt
-                        emsg = r["error"]
-                        short = "Kota doldu" if ("kota" in emsg.lower() or "limit" in emsg.lower() or "quota" in emsg.lower()) else \
-                                ("Metin çıkarılamadı" if "Metin" in emsg else "Hata")
-                        st.markdown(f"<span style='color:#c00;'>❌ {short}</span>", unsafe_allow_html=True)
+                        st.markdown(f"<span style='color:#c00;'>❌ {diag['etiket']}</span> "
+                                    f"<span style='color:#999;font-size:11px;'>· {diag['kaynak']}</span>",
+                                    unsafe_allow_html=True)
                     with col_btn:
-                        st.write("")
+                        with st.popover("ℹ️ Neden?"):
+                            st.markdown(f"**Kaynak:** {diag['kaynak']}")
+                            st.markdown(f"**Sorun:** {diag['aciklama']}")
+                            st.markdown(f"**Çözüm:** {diag['cozum']}")
+                            st.divider()
+                            st.caption("Teknik mesaj:")
+                            st.code(str(r["error"]), language=None)
                 else:
                     urun = (r.get("data") or {}).get("urun_adi") or r["filename"]
                     with col_name:
@@ -1501,35 +1610,19 @@ def main():
                                     + (f" <span style='color:#999;font-size:11px;'>· {eng_lbl}</span>" if eng_lbl else ""),
                                     unsafe_allow_html=True)
                     with col_btn:
-                        if st.button("🖼️ Kartı Aç", key=f"open_card_{i}", use_container_width=True):
-                            st.session_state["open_card_idx"] = i
-
-            # Tıklanan kartı yeni pencerede açan JS (components.html ile)
-            if "open_card_idx" in st.session_state:
-                idx = st.session_state.pop("open_card_idx")
-                if 0 <= idx < len(results) and "html" in results[idx]:
-                    card_html = results[idx]["html"]
-                    prod = safe_filename((results[idx].get("data") or {}).get("urun_adi")
-                                         or results[idx]["filename"].replace(".pdf", ""))
-                    # Kartı yeni pencerede aç
-                    js_open = f"""
-                    <script>
-                    (function(){{
-                        var html = {json.dumps(card_html)};
-                        var w = window.open("", "_blank");
-                        if (w) {{
-                            w.document.open();
-                            w.document.write(html);
-                            w.document.close();
-                            try {{ w.document.title = {json.dumps(prod)}; }} catch(e){{}}
-                        }} else {{
-                            alert("Açılır pencere engellendi. Lütfen bu site için pop-up'a izin verin.");
-                        }}
-                    }})();
-                    </script>
-                    """
-                    components.html(js_open, height=0)
-                    st.caption(f"🪟 **{prod}** kartı yeni pencerede açıldı. (Açılmadıysa tarayıcınızın pop-up iznini kontrol edin.)")
+                        # Kartı data-URL'li bağlantı olarak sun: kullanıcı tıklayınca yeni sekmede açılır
+                        # (window.open pop-up engeline takılmaz, çünkü gerçek <a> tıklaması).
+                        card_html = r.get("html", "")
+                        if card_html:
+                            b64 = base64.b64encode(card_html.encode("utf-8")).decode()
+                            href = f"data:text/html;base64,{b64}"
+                            st.markdown(
+                                f'<a href="{href}" target="_blank" rel="noopener" '
+                                f'style="display:inline-block;text-align:center;width:100%;'
+                                f'padding:6px 4px;background:#1565c0;color:#fff;border-radius:6px;'
+                                f'text-decoration:none;font-size:13px;font-weight:500;">🖼️ Kartı Aç</a>',
+                                unsafe_allow_html=True
+                            )
 
             # Hatalı dosyaları sadece onları tekrar dene
             err_indices = [i for i, r in enumerate(results) if "error" in r]
