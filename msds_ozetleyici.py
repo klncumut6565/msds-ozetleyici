@@ -577,7 +577,7 @@ def call_claude(text: str, api_key: str, model: str = "claude-haiku-4-5-20251001
     }
     payload = {
         "model": model,
-        "max_tokens": 2000,
+        "max_tokens": 4096,
         "temperature": 0.1,
         "system": "Sen bir MSDS/SDS belge analiz uzmanısın. SADECE geçerli JSON döndür, başka metin yazma.",
         "messages": [
@@ -603,6 +603,23 @@ def call_claude(text: str, api_key: str, model: str = "claude-haiku-4-5-20251001
                     time.sleep(wait)
                     continue
                 raise RuntimeError("RATE_LIMIT_MINUTE: " + body[:200])
+            # 4xx hatalarında Anthropic'in gerçek hata açıklamasını çıkar (sadece "400" değil)
+            if 400 <= resp.status_code < 500:
+                try:
+                    err_json = resp.json()
+                    err_detail = err_json.get("error", {}).get("message", "") or resp.text[:300]
+                    err_type = err_json.get("error", {}).get("type", "")
+                except Exception:
+                    err_detail = resp.text[:300]
+                    err_type = ""
+                # Anahtar/yetki sorunları
+                if resp.status_code in (401, 403):
+                    raise RuntimeError(f"API_KEY_INVALID: Claude anahtarı geçersiz/yetkisiz. ({err_detail})")
+                # Belge çok büyük
+                if resp.status_code == 413 or "too large" in err_detail.lower() or "maximum" in err_detail.lower():
+                    raise RuntimeError("PAYLOAD_TOO_LARGE: " + err_detail)
+                # Diğer 400'ler: gerçek sebebi göster
+                raise RuntimeError(f"CLAUDE_400 [{err_type}]: {err_detail}")
             resp.raise_for_status()
             data = resp.json()
             # Claude yanıtı: content[0].text
@@ -849,6 +866,17 @@ def diagnose_error(err_msg: str) -> dict:
                      "OCR ile metne çevirin. Bu, AI motoruyla ilgili DEĞİL — dosyanın kendisiyle ilgili.",
         }
 
+    # ── MOTOR kaynaklı: istek çok büyük (413/payload) — günlük kotadan ÖNCE ──
+    if "payload_too_large" in low or (("too large" in low or "413" in m) and "max_tokens" not in low):
+        return {
+            "kaynak": "🤖 AI Motoru (boyut)",
+            "etiket": "Belge çok büyük",
+            "aciklama": "Bu MSDS'in metni, bu AI motorunun tek seferde kabul ettiğinden büyük. "
+                        "Belge KIRPILMADI — bunun yerine daha yüksek kapasiteli motora geçilmeye çalışıldı.",
+            "cozum": "Bu belge için Gemini veya Claude motorunu kullanın (Groq'tan çok daha büyük belge kabul ederler). "
+                     "Anahtarlarını girerseniz otomatik yedekleme bu büyük belgeleri onlara yönlendirir. Bilgi kaybı olmaz.",
+        }
+
     # ── MOTOR kaynaklı: günlük kota ──
     if _is_daily_exhausted_error(Exception(m)):
         return {
@@ -857,17 +885,6 @@ def diagnose_error(err_msg: str) -> dict:
             "aciklama": "Seçtiğiniz AI motorunun GÜNLÜK ücretsiz istek limiti dolmuş.",
             "cozum": "Başka bir motorun anahtarını da girin (otomatik yedekleme devralır), ya da "
                      "ertesi gün tekrar deneyin. Bu, uygulamayla ilgili DEĞİL — motorun limitiyle ilgili.",
-        }
-
-    # ── MOTOR kaynaklı: istek çok büyük (413) ──
-    if "payload_too_large" in low or "413" in m or "too large" in low:
-        return {
-            "kaynak": "🤖 AI Motoru (boyut)",
-            "etiket": "Belge çok büyük",
-            "aciklama": "Bu MSDS'in metni, bu AI motorunun tek seferde kabul ettiğinden büyük. "
-                        "Belge KIRPILMADI — bunun yerine daha yüksek kapasiteli motora geçilmeye çalışıldı.",
-            "cozum": "Bu belge için Gemini veya Claude motorunu kullanın (Groq'tan çok daha büyük belge kabul ederler). "
-                     "Anahtarlarını girerseniz otomatik yedekleme bu büyük belgeleri onlara yönlendirir. Bilgi kaybı olmaz.",
         }
 
     # ── MOTOR kaynaklı: dakikalık limit ──
@@ -888,6 +905,26 @@ def diagnose_error(err_msg: str) -> dict:
             "etiket": "Bağlantı hatası",
             "aciklama": "AI motoruna ulaşılamadı (internet veya sunucu geçici sorunu).",
             "cozum": "İnternet bağlantınızı kontrol edip tekrar deneyin. Geçici bir durum olabilir.",
+        }
+
+    # ── Claude/Anthropic 400 — gerçek API mesajını göster ──
+    if "claude_400" in low or "api_key_invalid" in low:
+        if "api_key_invalid" in low:
+            return {
+                "kaynak": "🔑 API Anahtarı",
+                "etiket": "Claude anahtarı geçersiz",
+                "aciklama": "Claude (Anthropic) API anahtarı geçersiz, süresi dolmuş veya bu hesabın "
+                            "kredisi/yetkisi yok.",
+                "cozum": "console.anthropic.com → anahtarın geçerli olduğunu ve hesapta kredi/ödeme tanımlı "
+                         "olduğunu kontrol edin. Anthropic ücretlidir; bakiye yoksa istekler reddedilir.",
+            }
+        return {
+            "kaynak": "🤖 AI Motoru (istek)",
+            "etiket": "Claude isteği reddetti (400)",
+            "aciklama": "Claude API isteği geçersiz buldu. Aşağıdaki teknik mesaj tam sebebi gösterir "
+                        "(çoğunlukla model adı, kredi/bakiye veya istek biçimiyle ilgilidir).",
+            "cozum": "Teknik mesajı okuyun. Sık sebepler: hesapta kredi yok (ödeme ekleyin), model adı bu "
+                     "hesapta kullanılamıyor, ya da girdi çok uzun. Gemini/Groq ile de deneyebilirsiniz.",
         }
 
     # ── MOTOR kalitesi kaynaklı: bozuk JSON ──
