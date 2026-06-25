@@ -606,6 +606,18 @@ def call_groq(text: str, api_key: str, model: str = "llama-3.3-70b-versatile", m
         raise
 
 
+def call_openrouter(text: str, api_key: str, model: str = "meta-llama/llama-4-maverick:free",
+                    max_retries: int = 5) -> dict:
+    """OpenRouter API (OpenAI-uyumlu). Tek anahtarla onlarca modele erişim; ücretsiz modeller var.
+    Uzun belgeler için ideal: ücretsiz Llama 4 Maverick 1M token context sunar (kırpma gerekmez).
+    Ücretsiz katman ~20 istek/dakika, ~200 istek/gün."""
+    if not api_key:
+        raise RuntimeError("OpenRouter API anahtarı girilmemiş.")
+    return call_openai_compatible(text, api_key, model,
+                                  base_url="https://openrouter.ai/api/v1",
+                                  char_limit=999999, max_retries=max_retries)
+
+
 def call_claude(text: str, api_key: str, model: str = "claude-haiku-4-5-20251001", max_retries: int = 4) -> dict:
     """Anthropic Claude API (en kaliteli, ücretli). Kendi mesaj formatını kullanır."""
     if not api_key:
@@ -839,22 +851,25 @@ def infer_pictograms_from_text(data: dict) -> list:
 ENGINE_LABELS = {
     "groq": "⚡ Groq",
     "gemini": "☁️ Gemini",
+    "openrouter": "🌐 OpenRouter",
     "openai": "🤖 OpenAI",
     "claude": "🧠 Claude",
     "ollama": "🖥️ Ollama (yerel)",
 }
-# Failover sırası: en yüksek günlük kapasiteden en düşüğe / yerele.
-FAILOVER_ORDER = ["groq", "gemini", "openai", "claude", "ollama"]
+# Failover sırası: ücretsiz/yüksek kapasiteli motorlar önce.
+FAILOVER_ORDER = ["groq", "gemini", "openrouter", "openai", "claude", "ollama"]
 
 
 def call_ai(text: str, engine: str, model: str, ollama_url: str = "",
             gemini_api_key: str = "", groq_api_key: str = "", openai_api_key: str = "",
-            claude_api_key: str = "") -> dict:
+            claude_api_key: str = "", openrouter_api_key: str = "") -> dict:
     """Seçili AI motoruna göre tek bir çağrı noktası."""
     if engine == "gemini":
         data = call_gemini(text, gemini_api_key, model)
     elif engine == "groq":
         data = call_groq(text, groq_api_key, model)
+    elif engine == "openrouter":
+        data = call_openrouter(text, openrouter_api_key, model)
     elif engine == "openai":
         data = call_openai_compatible(text, openai_api_key, model,
                                       base_url="https://api.openai.com/v1")
@@ -1027,6 +1042,7 @@ def analyze_with_failover(text, chain, models, keys, ollama_url, exhausted, on_s
                 groq_api_key=keys.get("groq", ""),
                 openai_api_key=keys.get("openai", ""),
                 claude_api_key=keys.get("claude", ""),
+                openrouter_api_key=keys.get("openrouter", ""),
             )
             return data, eng
         except Exception as e:
@@ -1240,19 +1256,20 @@ def main():
         engine_options = [
             "⚡ Groq — çok hızlı, yüksek ücretsiz limit",
             "☁️ Gemini — Google, ücretsiz",
+            "🌐 OpenRouter — uzun belgeler için, ücretsiz modeller",
             "🤖 OpenAI — ücretli",
             "🧠 Claude — en kaliteli, ücretli",
             "🖥️ Ollama (yerel) — sınırsız, donanıma bağlı",
         ]
-        engine_keys = ["groq", "gemini", "openai", "claude", "ollama"]
-        default_idx = 4 if _local_ok else 0  # yerel varsa Ollama, yoksa Groq
+        engine_keys = ["groq", "gemini", "openrouter", "openai", "claude", "ollama"]
+        default_idx = 5 if _local_ok else 0  # yerel varsa Ollama, yoksa Groq
         engine_label = st.radio("Motor seç", engine_options, index=default_idx,
                                 label_visibility="collapsed")
         engine = engine_keys[engine_options.index(engine_label)]
 
         ollama_url = "http://localhost:11434"
         model = ""
-        gemini_api_key = groq_api_key = openai_api_key = claude_api_key = ""
+        gemini_api_key = groq_api_key = openai_api_key = claude_api_key = openrouter_api_key = ""
         ollama_ok = False
 
         if engine == "ollama":
@@ -1289,6 +1306,25 @@ def main():
                     "Groq ücretsiz katmanda **günde ~14.400 istek** verir (8B modelde) ve çok hızlıdır — "
                     "toplu işlem için en uygun seçenek. Kredi kartı gerekmez. "
                     "Anahtar: [console.groq.com/keys](https://console.groq.com/keys)"
+                )
+
+        elif engine == "openrouter":
+            model = st.selectbox(
+                "Model",
+                ["meta-llama/llama-4-maverick:free", "deepseek/deepseek-chat-v3.1:free",
+                 "meta-llama/llama-3.3-70b:free", "google/gemini-2.0-flash-exp:free"],
+                help="Maverick (önerilen): 1M token context, uzun MSDS belgeleri için ideal, ücretsiz. "
+                     "Diğerleri de ücretsiz (:free). Listede olmayan modelleri elle de yazabilirsiniz."
+            )
+            st.markdown('🔑 **Ücretsiz OpenRouter anahtarı** → [openrouter.ai/keys](https://openrouter.ai/keys)')
+            st.caption("🌐 OpenRouter anahtarını aşağıdaki **🔁 Otomatik yedekleme** bölümüne girin (kayıtlı kalır).")
+            with st.expander("ℹ️ Neden OpenRouter?"):
+                st.markdown(
+                    "OpenRouter tek anahtarla onlarca modele erişim verir ve **ücretsiz** modeller içerir "
+                    "(kredi kartı gerekmez). Uzun MSDS belgeleri için **Llama 4 Maverick** ücretsiz modeli "
+                    "1 milyon token context sunar — Gemini Flash-Lite veya Groq yetersiz kaldığında ideal. "
+                    "Ücretsiz katman: ~20 istek/dakika, ~200 istek/gün. Anahtar: "
+                    "[openrouter.ai/keys](https://openrouter.ai/keys) (e-posta ile kayıt, kart yok)."
                 )
 
         elif engine == "openai":
@@ -1339,6 +1375,7 @@ def main():
                 "**🔑 Ücretsiz/ücretli anahtar alma adresleri:**\n"
                 "- ⚡ **Groq** (ücretsiz, kredi kartsız, en yüksek limit): [console.groq.com/keys](https://console.groq.com/keys)\n"
                 "- ☁️ **Gemini** (ücretsiz): [aistudio.google.com/apikey](https://aistudio.google.com/apikey)\n"
+                "- 🌐 **OpenRouter** (ücretsiz modeller, uzun belge, kredi kartsız): [openrouter.ai/keys](https://openrouter.ai/keys)\n"
                 "- 🤖 **OpenAI** (ücretli): [platform.openai.com/api-keys](https://platform.openai.com/api-keys)\n"
                 "- 🧠 **Claude** (ücretli, **ön ödemeli kredi gerekir** — Claude Pro aboneliği API'yı KAPSAMAZ): [console.anthropic.com](https://console.anthropic.com/settings/keys)"
             )
@@ -1350,6 +1387,8 @@ def main():
                                     key="api_key_groq", help="Groq için. gsk_ ile başlar.")
             gemini_fo = st.text_input("☁️ Gemini anahtarı", type="password", placeholder="AIza...",
                                       key="api_key_gemini", help="Gemini için. AIza ile başlar.")
+            openrouter_fo = st.text_input("🌐 OpenRouter anahtarı", type="password", placeholder="sk-or-...",
+                                          key="api_key_openrouter", help="OpenRouter için. sk-or- ile başlar.")
             openai_fo = st.text_input("🤖 OpenAI anahtarı", type="password", placeholder="sk-...",
                                       key="api_key_openai", help="OpenAI için. sk- ile başlar.")
             claude_fo = st.text_input("🧠 Claude anahtarı", type="password", placeholder="sk-ant-...",
@@ -1359,6 +1398,7 @@ def main():
             girilenler = []
             if groq_fo: girilenler.append("⚡ Groq")
             if gemini_fo: girilenler.append("☁️ Gemini")
+            if openrouter_fo: girilenler.append("🌐 OpenRouter")
             if openai_fo: girilenler.append("🤖 OpenAI")
             if claude_fo: girilenler.append("🧠 Claude")
             if girilenler:
@@ -1370,6 +1410,7 @@ def main():
         # (Anahtar diske/sunucuya yazılmaz, başka kullanıcıya geçmez, sadece bu oturumda yaşar.)
         groq_api_key = st.session_state.get("api_key_groq", "") or ""
         gemini_api_key = st.session_state.get("api_key_gemini", "") or ""
+        openrouter_api_key = st.session_state.get("api_key_openrouter", "") or ""
         openai_api_key = st.session_state.get("api_key_openai", "") or ""
         claude_api_key = st.session_state.get("api_key_claude", "") or ""
 
@@ -1393,6 +1434,7 @@ def main():
     engine_keys_map = {
         "groq": groq_api_key,
         "gemini": gemini_api_key,
+        "openrouter": openrouter_api_key,
         "openai": openai_api_key,
         "claude": claude_api_key,
         "ollama": "local" if ollama_ok else "",
@@ -1417,6 +1459,7 @@ def main():
     default_models = {
         "groq": "llama-3.3-70b-versatile",
         "gemini": "gemini-2.5-flash-lite",
+        "openrouter": "meta-llama/llama-4-maverick:free",
         "openai": "gpt-4o-mini",
         "claude": "claude-haiku-4-5-20251001",
         "ollama": model if engine == "ollama" else "qwen2.5",
@@ -1477,7 +1520,7 @@ def main():
                 with st.spinner(wait_msg):
                     try:
                         _chain = build_failover_chain(engine)
-                        _keys = {"gemini": gemini_api_key, "groq": groq_api_key, "openai": openai_api_key, "claude": claude_api_key}
+                        _keys = {"gemini": gemini_api_key, "groq": groq_api_key, "openai": openai_api_key, "claude": claude_api_key, "openrouter": openrouter_api_key}
                         _exhausted = set()
                         result, _used = analyze_with_failover(
                             pdf_text, _chain, default_models, _keys, ollama_url, _exhausted
@@ -1620,13 +1663,15 @@ def main():
                 progress = st.progress(0.0)
                 status = st.empty()
                 switch_note = st.empty()
+                live_list = st.container()   # tamamlanan kartlar anında buraya eklenir
+                live_list.markdown("**📋 İşlenen ürünler (canlı):**")
                 results = []
                 total = len(batch_files)
 
                 # Failover zinciri ve paylaşımlı durum
                 chain = build_failover_chain(engine)
                 exhausted = set()           # bu oturumda kotası dolan motorlar
-                keys = {"gemini": gemini_api_key, "groq": groq_api_key, "openai": openai_api_key, "claude": claude_api_key}
+                keys = {"gemini": gemini_api_key, "groq": groq_api_key, "openai": openai_api_key, "claude": claude_api_key, "openrouter": openrouter_api_key}
                 current_engine = {"val": chain[0] if chain else engine}
 
                 def _on_switch(eng):
@@ -1636,6 +1681,22 @@ def main():
                         now = ENGINE_LABELS.get(eng, eng)
                         switch_note.info(f"ℹ️ {prev} kotası doldu — kalan dosyalar **{now}** ile sürdürülüyor.")
                         current_engine["val"] = eng
+
+                def _show_live(rec):
+                    # Bir dosya biter bitmez canlı listeye anında ekle
+                    if "error" in rec:
+                        diag = diagnose_error(rec["error"])
+                        live_list.markdown(
+                            f"❌ **{rec['filename']}** — <span style='color:#c00;'>{diag['etiket']}</span> "
+                            f"<span style='color:#999;font-size:11px;'>{diag['kaynak']}</span>",
+                            unsafe_allow_html=True)
+                    else:
+                        urun = (rec.get("data") or {}).get("urun_adi") or rec["filename"]
+                        eng_lbl = ENGINE_LABELS.get(rec.get("engine", ""), "")
+                        live_list.markdown(
+                            f"✅ **{urun}** "
+                            f"<span style='color:#999;font-size:11px;'>· {eng_lbl}</span>",
+                            unsafe_allow_html=True)
 
                 for idx, f in enumerate(batch_files):
                     active_label = ENGINE_LABELS.get(current_engine["val"], current_engine["val"])
@@ -1672,6 +1733,7 @@ def main():
                         record["error"] = str(e)
 
                     results.append(record)
+                    _show_live(record)   # tamamlanan ürünü ANINDA canlı listede göster
                     progress.progress((idx + 1) / total)
 
                     # Aktif motor bulut ise dakikalık limite takılmamak için kısa bekleme
@@ -1791,7 +1853,7 @@ def main():
                     rstatus = st.empty()
                     rchain = build_failover_chain(engine)
                     rexhausted = set()
-                    rkeys = {"gemini": gemini_api_key, "groq": groq_api_key, "openai": openai_api_key, "claude": claude_api_key}
+                    rkeys = {"gemini": gemini_api_key, "groq": groq_api_key, "openai": openai_api_key, "claude": claude_api_key, "openrouter": openrouter_api_key}
                     for n, i in enumerate(err_indices):
                         rec = results[i]
                         rstatus.write(f"Tekrar deneniyor: **{rec['filename']}** ({n + 1}/{len(err_indices)})")
