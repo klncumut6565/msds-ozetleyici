@@ -1499,10 +1499,34 @@ def main():
     # ════════════════════════════════════════════════════════════
     with tab_batch:
         st.markdown(
-            "Yüzlerce PDF'i tek seferde sıraya koyup işleyebilirsin. "
             "Yüzlerce PDF'i tek seferde sıraya koyup işleyebilirsin. Bittiğinde her ürünün "
             "**kartını tek tek açabilir**, ya da tüm kartları **HTML/JSON ZIP** olarak indirebilirsin."
         )
+
+        # ── Kaydedilmiş oturumu geri yükle ──
+        with st.expander("💾 Önceki oturumu geri yükle (sayfa yenilenince kartlar kaybolursa)"):
+            st.caption(
+                "Toplu işlem sonuçları yalnızca açık olduğun süre boyunca hafızada tutulur; sayfa yenilenir "
+                "veya internet kesilirse kaybolur. Bunu önlemek için işlem bitince **'Oturumu Kaydet'** ile "
+                "indirdiğin `.json` dosyasını buraya yükle — tüm kartlar yeniden analiz YAPILMADAN geri gelir."
+            )
+            restore_file = st.file_uploader("Kayıtlı oturum dosyası (.json)", type="json",
+                                            key="restore_uploader")
+            if restore_file is not None:
+                if st.button("📂 Bu oturumu geri yükle", use_container_width=True):
+                    try:
+                        loaded = json.loads(restore_file.read().decode("utf-8"))
+                        if isinstance(loaded, dict) and "results" in loaded:
+                            loaded = loaded["results"]
+                        if isinstance(loaded, list):
+                            st.session_state["batch_results"] = loaded
+                            st.success(f"✓ {len(loaded)} kayıt geri yüklendi.")
+                            st.rerun()
+                        else:
+                            st.error("Dosya biçimi tanınmadı.")
+                    except Exception as e:
+                        st.error(f"Geri yükleme hatası: {e}")
+
         # Aktif failover zincirini göster
         _chain_preview = build_failover_chain(engine)
         if _chain_preview:
@@ -1718,7 +1742,14 @@ def main():
                             rprog.progress((n + 1) / len(err_indices))
                             continue
                         try:
-                            pdf_text = extract_pdf_text(rec.get("_bytes", b""))
+                            raw = rec.get("_bytes", b"")
+                            if not raw:
+                                # Geri yüklenen oturumda ham PDF yok → yeniden analiz edilemez
+                                rec["error"] = ("Bu kayıt önceki oturumdan geri yüklendi; ham PDF olmadığı için "
+                                                "yeniden denenemez. Bu dosyayı tekrar yükleyip analiz edin.")
+                                rprog.progress((n + 1) / len(err_indices))
+                                continue
+                            pdf_text = extract_pdf_text(raw)
                             if len(pdf_text) < 100:
                                 rec["error"] = "Metin çıkarılamadı (taranmış/görsel PDF olabilir)"
                             else:
@@ -1736,6 +1767,25 @@ def main():
                     rstatus.empty()
                     st.session_state["batch_results"] = results
                     st.rerun()
+
+            # ── Oturumu kaydet: sayfa yenilense/internet kesilse bile kaybolmasın ──
+            st.markdown("##### 💾 Oturumu Kaydet (kayıp önleme)")
+            st.caption("Bu dosyayı indirin. Sayfa yenilenir veya kapanırsa, üstteki **'Önceki oturumu "
+                       "geri yükle'** bölümünden bu dosyayı yükleyerek tüm kartları yeniden analiz "
+                       "yapmadan geri getirebilirsiniz.")
+            # _bytes (ham PDF) çıkarılır — gerekmez ve dosyayı şişirir
+            session_payload = {
+                "version": 1,
+                "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "results": [{k: v for k, v in r.items() if k != "_bytes"} for r in results],
+            }
+            st.download_button(
+                "💾 Oturumu Kaydet (.json)",
+                data=json.dumps(session_payload, ensure_ascii=False).encode("utf-8"),
+                file_name=f"msds_oturum_{datetime.now().strftime('%Y%m%d_%H%M')}.json",
+                mime="application/json",
+                use_container_width=True
+            )
 
             # Toplu indirme: HTML ve JSON ZIP (Excel kaldırıldı — istek üzerine)
             c1, c2 = st.columns(2)
