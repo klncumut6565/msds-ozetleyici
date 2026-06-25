@@ -494,22 +494,34 @@ def call_openai_compatible(text: str, api_key: str, model: str, base_url: str,
                             char_limit: int = 30000, max_retries: int = 4) -> dict:
     """OpenAI-uyumlu sohbet API'ları için ortak çağrı (Groq, OpenAI, vb.).
     Groq endpoint'i: https://api.groq.com/openai/v1
-    Geçici hatalarda (429/500/503) Retry-After'a göre bekleyip tekrar dener."""
+    Geçici hatalarda (429/500/503) Retry-After'a göre bekleyip tekrar dener.
+    413 (Payload Too Large) gelirse metni küçültüp yeniden dener."""
     url = f"{base_url.rstrip('/')}/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": "Sen bir MSDS/SDS belge analiz uzmanısın. SADECE geçerli JSON döndür."},
-            {"role": "user", "content": OLLAMA_PROMPT.format(text=select_relevant_text(text, gemini_limit=char_limit))},
-        ],
-        "temperature": 0.1,
-        "response_format": {"type": "json_object"},
-    }
+
+    cur_limit = char_limit  # 413 alırsak bu küçülür
+
+    def _build_payload(limit):
+        return {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": "Sen bir MSDS/SDS belge analiz uzmanısın. SADECE geçerli JSON döndür."},
+                {"role": "user", "content": OLLAMA_PROMPT.format(text=select_relevant_text(text, gemini_limit=limit))},
+            ],
+            "temperature": 0.1,
+            "response_format": {"type": "json_object"},
+        }
+
     last_err = None
     for attempt in range(max_retries):
         try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=120)
+            resp = requests.post(url, headers=headers, json=_build_payload(cur_limit), timeout=120)
+            # 413: istek çok büyük → metni yarıya indirip tekrar dene
+            if resp.status_code == 413:
+                if cur_limit > 3000:
+                    cur_limit = max(3000, cur_limit // 2)
+                    continue
+                raise RuntimeError("PAYLOAD_TOO_LARGE: Belge metni motorun kabul ettiğinden büyük.")
             if resp.status_code == 429:
                 body = resp.text
                 retry_after = resp.headers.get("retry-after") or resp.headers.get("Retry-After")
@@ -551,6 +563,10 @@ def call_openai_compatible(text: str, api_key: str, model: str, base_url: str,
         except Exception as e:
             last_err = e
             msg = str(e)
+            # 413 requests.HTTPError olarak da gelebilir
+            if "413" in msg and cur_limit > 3000:
+                cur_limit = max(3000, cur_limit // 2)
+                continue
             transient = any(c in msg for c in ["500", "502", "503", "504", "timeout", "Timeout"])
             if transient and attempt < max_retries - 1:
                 time.sleep(3 * (attempt + 1))
@@ -862,6 +878,17 @@ def diagnose_error(err_msg: str) -> dict:
             "aciklama": "Seçtiğiniz AI motorunun GÜNLÜK ücretsiz istek limiti dolmuş.",
             "cozum": "Başka bir motorun anahtarını da girin (otomatik yedekleme devralır), ya da "
                      "ertesi gün tekrar deneyin. Bu, uygulamayla ilgili DEĞİL — motorun limitiyle ilgili.",
+        }
+
+    # ── MOTOR kaynaklı: istek çok büyük (413) ──
+    if "payload_too_large" in low or "413" in m or "too large" in low:
+        return {
+            "kaynak": "🤖 AI Motoru (boyut)",
+            "etiket": "Belge çok büyük",
+            "aciklama": "Bu MSDS'in metni, AI motorunun tek seferde kabul ettiğinden büyük. "
+                        "Uygulama metni otomatik küçültüp tekrar dener; yine de sığmadıysa belge çok uzun demektir.",
+            "cozum": "Daha yüksek kapasiteli bir motor deneyin (Gemini veya OpenAI, Groq'tan daha büyük belge kabul eder), "
+                     "ya da bu belgeyi tek tek analiz sekmesinde işleyin. Bu bir motor boyut sınırı — uygulama hatası değil.",
         }
 
     # ── MOTOR kaynaklı: dakikalık limit ──
@@ -1610,19 +1637,45 @@ def main():
                                     + (f" <span style='color:#999;font-size:11px;'>· {eng_lbl}</span>" if eng_lbl else ""),
                                     unsafe_allow_html=True)
                     with col_btn:
-                        # Kartı data-URL'li bağlantı olarak sun: kullanıcı tıklayınca yeni sekmede açılır
-                        # (window.open pop-up engeline takılmaz, çünkü gerçek <a> tıklaması).
+                        # Kartı BLOB URL ile yeni sekmede aç. data: URL'leri tarayıcılar üst düzey
+                        # gezinmede engeller (about:blank açılır); blob: URL bu kısıtlamaya takılmaz.
                         card_html = r.get("html", "")
                         if card_html:
                             b64 = base64.b64encode(card_html.encode("utf-8")).decode()
-                            href = f"data:text/html;base64,{b64}"
-                            st.markdown(
-                                f'<a href="{href}" target="_blank" rel="noopener" '
-                                f'style="display:inline-block;text-align:center;width:100%;'
-                                f'padding:6px 4px;background:#1565c0;color:#fff;border-radius:6px;'
-                                f'text-decoration:none;font-size:13px;font-weight:500;">🖼️ Kartı Aç</a>',
-                                unsafe_allow_html=True
-                            )
+                            btn_id = f"openbtn_{i}"
+                            open_widget = f"""
+<button id="{btn_id}" style="width:100%;padding:7px 4px;background:#1565c0;color:#fff;
+  border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:500;">🖼️ Kartı Aç</button>
+<script>
+(function(){{
+  var b64 = "{b64}";
+  function b64ToBlob(b64Data){{
+    var byteChars = atob(b64Data);
+    var bytes = new Uint8Array(byteChars.length);
+    for (var i=0; i<byteChars.length; i++) bytes[i] = byteChars.charCodeAt(i);
+    return new Blob([bytes], {{type: "text/html"}});
+  }}
+  var btn = document.getElementById("{btn_id}");
+  if (btn) {{
+    btn.addEventListener("click", function(){{
+      try {{
+        var blob = b64ToBlob(b64);
+        var url = URL.createObjectURL(blob);
+        var win = window.open(url, "_blank");
+        if (!win) {{
+          // Pop-up engellendiyse: indirilebilir bağlantıya düş
+          var a = document.createElement("a");
+          a.href = url; a.target = "_blank"; a.rel = "noopener";
+          document.body.appendChild(a); a.click(); a.remove();
+        }}
+        setTimeout(function(){{ URL.revokeObjectURL(url); }}, 60000);
+      }} catch(e) {{ alert("Kart açılamadı: " + e.message); }}
+    }});
+  }}
+}})();
+</script>
+"""
+                            components.html(open_widget, height=44)
 
             # Hatalı dosyaları sadece onları tekrar dene
             err_indices = [i for i, r in enumerate(results) if "error" in r]
