@@ -746,18 +746,52 @@ def call_claude(text: str, api_key: str, model: str = "claude-haiku-4-5-20251001
 
 
 def call_ollama(text: str, model: str, base_url: str) -> dict:
-    payload = {
-        "model": model,
-        "prompt": OLLAMA_PROMPT.format(text=select_relevant_text(text, gemini_limit=12000)),
-        "stream": False,
-        "format": "json",
-        "options": {"temperature": 0.1}
-    }
-    resp = requests.post(f"{base_url.rstrip('/')}/api/generate", json=payload, timeout=300)
-    resp.raise_for_status()
-    raw = resp.json().get("response", "{}")
-    raw = re.sub(r"```json|```", "", raw).strip()
-    return json.loads(raw)
+    """Yerel Ollama ile analiz. 8 GB RAM'de dengeli çalışması için context penceresi (num_ctx)
+    ayarlanır. Uzun belgelerde 500 hatası gelirse context'i biraz büyütüp tekrar dener;
+    yine olmazsa belgeyi yerel modelin kaldırabileceği boyuta getirir (yalnızca Ollama için)."""
+    full_prompt = OLLAMA_PROMPT.format(text=text)
+    # Yerel model + 8 GB RAM dengesi: 8192 token (~30K karakter) çoğu MSDS'i kapsar,
+    # RAM'i de aşırı yormaz. Çok uzun belgede aşağıda kademeli artırılır/küçültülür.
+    ctx_sizes = [8192, 16384]   # önce 8K dene, 500 alırsan 16K dene
+    last_err = None
+    for ctx in ctx_sizes:
+        # Bu context'e sığacak kadar metin (yalnızca yerel Ollama için; bulut motorlarda kırpma yok)
+        approx_chars = ctx * 3   # ~3 karakter/token kaba tahmin, prompt payı için biraz düşük tut
+        prompt = full_prompt if len(full_prompt) <= approx_chars else full_prompt[:approx_chars]
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "stream": False,
+            "format": "json",
+            "options": {"temperature": 0.1, "num_ctx": ctx},
+        }
+        try:
+            resp = requests.post(f"{base_url.rstrip('/')}/api/generate", json=payload, timeout=600)
+            if resp.status_code == 500:
+                # Ollama içeride çöktü (genelde context/RAM) → sıradaki ctx ile dene
+                last_err = RuntimeError("OLLAMA_500: Yerel model isteği işleyemedi "
+                                        "(genelde RAM yetersizliği veya belge çok uzun).")
+                continue
+            resp.raise_for_status()
+            raw = resp.json().get("response", "{}")
+            raw = re.sub(r"```json|```", "", raw).strip()
+            return json.loads(raw)
+        except requests.exceptions.Timeout:
+            last_err = RuntimeError("OLLAMA_TIMEOUT: Yerel model çok yavaş yanıt verdi "
+                                    "(8 GB RAM'de büyük belgeler uzun sürebilir).")
+            continue
+        except json.JSONDecodeError:
+            last_err = RuntimeError("Yerel model geçerli JSON döndürmedi (tekrar deneyin "
+                                    "veya çevrimiçi Groq/Gemini kullanın).")
+            continue
+        except Exception as e:
+            last_err = e
+            if "500" in str(e):
+                continue
+            raise
+    if last_err:
+        raise last_err
+    raise RuntimeError("OLLAMA_500: Yerel model yanıt veremedi.")
 
 
 def _parse_retry_delay(msg: str) -> float:
@@ -1000,6 +1034,18 @@ def diagnose_error(err_msg: str) -> dict:
                         "(içindeki yazılar resim halinde).",
             "cozum": "Bu dosya metin tabanlı değil. Çözüm: orijinal (dijital) PDF'i kullanın ya da "
                      "OCR ile metne çevirin. Bu, AI motoruyla ilgili DEĞİL — dosyanın kendisiyle ilgili.",
+        }
+
+    # ── Yerel Ollama hataları ──
+    if "ollama_500" in low or "ollama_timeout" in low or ("500" in m and "11434" in m) or "11434" in m:
+        return {
+            "kaynak": "🖥️ Yerel AI (Ollama)",
+            "etiket": "Yerel model çöktü",
+            "aciklama": "Yerel Ollama isteği işleyemedi. 8 GB RAM'de en sık sebep: belge yerel modelin "
+                        "kaldırabileceğinden uzun, ya da bellek yetersiz kaldı.",
+            "cozum": "Çözümler: (1) Bu belge için çevrimiçi **Groq/Gemini** kullanın (uzun belgeleri rahat işler). "
+                     "(2) Daha küçük model deneyin: `ollama pull llama3.2:1b`. (3) Diğer programları kapatıp "
+                     "RAM boşaltın. Yerel AI, 8 GB RAM'de uzun MSDS'lerde zorlanır — çevrimiçi motorlar daha güvenilir.",
         }
 
     # ── MODEL bulunamadı (404) — özellikle OpenRouter ücretsiz modelleri ──
@@ -1370,19 +1416,24 @@ def main():
             if ollama_ok and models:
                 st.success(f"✓ Ollama aktif — {len(models)} model mevcut")
                 preferred = [m for m in models if any(x in m.lower()
-                             for x in ["qwen", "mistral", "llama3", "phi", "gemma", "deepseek"])]
+                             for x in ["llama3.2", "qwen", "mistral", "llama3", "phi", "gemma", "deepseek"])]
                 model = st.selectbox("Model seç", preferred or models)
+                st.caption("💡 8 GB RAM'iniz varsa **llama3.2:3b** gibi küçük bir model seçin. "
+                           "Büyük modeller (7B+) bilgisayarı dondurabilir.")
             elif ollama_ok:
                 st.warning("⚠ Ollama çalışıyor ama model yüklü değil")
-                model = st.text_input("Model adı", "qwen2.5")
-                st.code("ollama pull qwen2.5")
+                model = st.text_input("Model adı", "llama3.2:3b")
+                st.code("ollama pull llama3.2:3b")
             else:
                 st.error("✗ Ollama bulunamadı")
-                model = st.text_input("Model adı", "qwen2.5")
+                model = st.text_input("Model adı", "llama3.2:3b")
                 with st.expander("📥 Kurulum"):
                     st.markdown("**1.** [ollama.ai](https://ollama.ai) → İndir ve kur\n\n"
-                                "**2.** Terminalde: `ollama pull qwen2.5` sonra `ollama serve`\n\n"
+                                "**2.** Terminalde: `ollama pull llama3.2:3b` (8 GB RAM için uygun, ~2 GB)\n\n"
                                 "**3.** Bu uygulamayı tekrar başlat")
+            st.caption("⚠️ Yerel AI bilgisayarınızın gücünü kullanır. 8 GB RAM'de büyük model (7B+) "
+                       "donmaya yol açabilir; küçük model (llama3.2:3b) önerilir. Daha hızlı + sorunsuz "
+                       "çalışma için çevrimiçi Groq/Gemini de kullanabilirsiniz.")
 
         elif engine == "groq":
             model = st.selectbox(
@@ -1556,7 +1607,7 @@ def main():
         "openrouter": "openrouter/free",
         "openai": "gpt-4o-mini",
         "claude": "claude-haiku-4-5-20251001",
-        "ollama": model if engine == "ollama" else "qwen2.5",
+        "ollama": model if engine == "ollama" else "llama3.2:3b",
     }
     # Seçili motorun modelini onun varsayılanına yaz (kullanıcı ne seçtiyse)
     default_models[engine] = model
