@@ -746,31 +746,39 @@ def call_claude(text: str, api_key: str, model: str = "claude-haiku-4-5-20251001
 
 
 def call_ollama(text: str, model: str, base_url: str) -> dict:
-    """Yerel Ollama ile analiz. 8 GB RAM'de dengeli çalışması için context penceresi (num_ctx)
-    ayarlanır. Uzun belgelerde 500 hatası gelirse context'i biraz büyütüp tekrar dener;
-    yine olmazsa belgeyi yerel modelin kaldırabileceği boyuta getirir (yalnızca Ollama için)."""
+    """Yerel Ollama ile analiz. 8 GB RAM'de RAM taşmasını önlemek için context penceresi (num_ctx)
+    KÜÇÜK başlar (4096), 500/yetersizlik olursa kademeli artar. num_predict ile yanıt da sınırlanır
+    (özet JSON için yeterli) — böylece bellek kullanımı kontrol altında kalır."""
     full_prompt = OLLAMA_PROMPT.format(text=text)
-    # Yerel model + 8 GB RAM dengesi: 8192 token (~30K karakter) çoğu MSDS'i kapsar,
-    # RAM'i de aşırı yormaz. Çok uzun belgede aşağıda kademeli artırılır/küçültülür.
-    ctx_sizes = [8192, 16384]   # önce 8K dene, 500 alırsan 16K dene
+    # 8 GB RAM dengesi: önce küçük context (daha az RAM), gerekirse büyüt.
+    # Büyük context = daha çok RAM = 8 GB'de çökme riski. O yüzden küçükten başla.
+    ctx_sizes = [4096, 8192]
     last_err = None
     for ctx in ctx_sizes:
-        # Bu context'e sığacak kadar metin (yalnızca yerel Ollama için; bulut motorlarda kırpma yok)
-        approx_chars = ctx * 3   # ~3 karakter/token kaba tahmin, prompt payı için biraz düşük tut
+        # Bu context'e sığacak kadar metin (yalnızca yerel Ollama için; bulut motorlarda kırpma yok).
+        # Prompt + yanıt için pay bırak: girdiye context'in ~%70'i kadar yer ver.
+        approx_chars = int(ctx * 3 * 0.7)
         prompt = full_prompt if len(full_prompt) <= approx_chars else full_prompt[:approx_chars]
         payload = {
             "model": model,
             "prompt": prompt,
             "stream": False,
             "format": "json",
-            "options": {"temperature": 0.1, "num_ctx": ctx},
+            "options": {
+                "temperature": 0.1,
+                "num_ctx": ctx,
+                "num_predict": 1500,   # yanıt uzunluğunu sınırla (özet JSON için yeterli, RAM dostu)
+            },
         }
         try:
             resp = requests.post(f"{base_url.rstrip('/')}/api/generate", json=payload, timeout=600)
             if resp.status_code == 500:
-                # Ollama içeride çöktü (genelde context/RAM) → sıradaki ctx ile dene
-                last_err = RuntimeError("OLLAMA_500: Yerel model isteği işleyemedi "
-                                        "(genelde RAM yetersizliği veya belge çok uzun).")
+                # Ollama içeride çöktü → sıradaki (daha büyük) ctx ile dene
+                try:
+                    detail = resp.json().get("error", "")
+                except Exception:
+                    detail = resp.text[:200]
+                last_err = RuntimeError(f"OLLAMA_500: Yerel model isteği işleyemedi. {detail}")
                 continue
             resp.raise_for_status()
             raw = resp.json().get("response", "{}")
