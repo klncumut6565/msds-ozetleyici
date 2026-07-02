@@ -763,6 +763,233 @@ MODEL_FALLBACKS = {
 }
 
 
+# ═══════════════════════════════════════════════════════════════
+# KURAL TABANLI (AI'SIZ) ANALİZ
+# MSDS/SDS belgeleri GHS gereği 16 standart bölümden oluşur; bu düzen
+# sayesinde birçok alan AI olmadan, desen eşleştirmeyle çıkarılabilir.
+# H/P kodları, CAS, UN numarası gibi yapısal alanlar çok güvenilir çıkar;
+# serbest metin alanları (ilk yardım, depolama...) belgeden kısaltılarak
+# alınır — AI özeti kadar akıcı olmaz ama kota/limit derdi yoktur.
+# ═══════════════════════════════════════════════════════════════
+
+_BOLUM_BASLIK_RX = re.compile(
+    r"(?im)^[^\S\n]{0,12}(?:BÖLÜM|BOLUM|KISIM|SECTION|ABSCHNITT)\s*[:.\-]?\s*(1[0-6]|[1-9])\b")
+_BOLUM_NUMARA_RX = re.compile(r"(?m)^[^\S\n]{0,8}(1[0-6]|[1-9])\s*[\.:]\s+[A-ZÇĞİÖŞÜ]")
+
+
+def _bolumlere_ayir(text: str) -> dict:
+    """Belgeyi 16 GHS bölümüne ayırır. Dönen: {bölüm_no: metin}."""
+    isaretler = [(int(m.group(1)), m.start()) for m in _BOLUM_BASLIK_RX.finditer(text)]
+    if len({n for n, _ in isaretler}) < 6:  # başlıkta 'BÖLÜM' kelimesi yoksa çıplak numara dene
+        isaretler += [(int(m.group(1)), m.start()) for m in _BOLUM_NUMARA_RX.finditer(text)]
+    isaretler.sort(key=lambda t: t[1])
+    # Her bölüm numarası için İLK geçtiği konumu al (içindekiler tablosu riskine karşı
+    # numaraların konum sırasında artıyor olmasını tercih et)
+    ilk = {}
+    son_no = 0
+    for no, poz in isaretler:
+        if no not in ilk and no >= son_no - 2:  # küçük geri sıçramalara tolerans
+            ilk[no] = poz
+            son_no = max(son_no, no)
+    bolumler = {}
+    sirali = sorted(ilk.items(), key=lambda t: t[1])
+    for i, (no, poz) in enumerate(sirali):
+        bitis = sirali[i + 1][1] if i + 1 < len(sirali) else len(text)
+        bolumler[no] = text[poz:bitis]
+    return bolumler
+
+
+_VERI_YOK = {"yok", "veri yok", "veri yoktur", "bilgi yok", "mevcut değil", "not available",
+             "not applicable", "n/a", "n.a.", "-", "–", "belirlenmemiş", "uygulanamaz", "none"}
+
+
+def _temiz(v, n=200):
+    s = re.sub(r"\s+", " ", str(v or "")).strip(" .;:,•*")
+    s = re.sub(r"^[–\-]\s+", "", s)   # baştaki madde imini at ("- değer")
+    s = s.rstrip("-–")                 # sondaki tireleri at
+    s = s.strip()                      # AMA baştaki '-17 °C' gibi negatif sayıları KORU
+    if not s or s.lower() in _VERI_YOK:
+        return None
+    return (s[: n - 1] + "…") if len(s) > n else s
+
+
+def _satir_degeri(blok: str, anahtarlar, n=160):
+    """'Anahtar : değer' biçimindeki satırlardan değeri çeker; değer aynı satırda
+    yoksa bir SONRAKİ satıra bakar (pdfplumber bazen etiketle değeri ayırır)."""
+    if not blok:
+        return None
+    for a in anahtarlar:
+        m = re.search(rf"(?im)^[^\n]{{0,60}}?{a}[^:\n]{{0,40}}[:\-]\s*([^\n]+)", blok)
+        if m:
+            v = _temiz(m.group(1), n)
+            if v:
+                return v
+        m = re.search(rf"(?im)^[^\n]{{0,60}}?{a}[^\n]{{0,40}}\n[ \t]*([^\n]{{3,}})", blok)
+        if m and ":" not in m.group(1)[:25]:
+            v = _temiz(m.group(1), n)
+            if v:
+                return v
+    return None
+
+
+def _blok_ozeti(blok: str, n=260):
+    """Bölümün başlık satırını atıp gövdesinden okunur bir kesit alır."""
+    if not blok:
+        return None
+    satirlar = [s.strip() for s in blok.splitlines()]
+    satirlar = [s for s in satirlar[1:] if s and not re.match(r"(?i)^(sayfa|page)\b", s)]
+    return _temiz(" ".join(satirlar), n)
+
+
+def analyze_rule_based(text: str) -> dict:
+    """AI kullanmadan, tamamen desen eşleştirmeyle MSDS özeti üretir.
+    AI motorlarıyla aynı JSON şemasını döndürür; call_ai içindeki güvenlik
+    ağları (piktogram türetme + ADR Tablo A tamamlama) buna da uygulanır."""
+    b = _bolumlere_ayir(text)
+    b1, b2, b3 = b.get(1, ""), b.get(2, ""), b.get(3, "")
+    b4, b5, b6 = b.get(4, ""), b.get(5, ""), b.get(6, "")
+    b7, b8, b9 = b.get(7, ""), b.get(8, ""), b.get(9, "")
+    b11, b13, b14 = b.get(11, ""), b.get(13, ""), b.get(14, "")
+    bas = text[:3000]  # bölümleme başarısız olursa belge başı
+
+    # ── Kimlik (Bölüm 1) ──
+    urun = _satir_degeri(b1 or bas, ["Ürün ad", "Ticari ad", "Ürün tanımlayıcı", "Madde adı",
+                                     "Ürün ismi", "Product name", "Trade name", "Product identifier"])
+    kimyasal = _satir_degeri(b1 + b3, ["Kimyasal ad", "Chemical name", "Madde ad", "IUPAC"])
+    cas_m = re.search(r"\b(\d{2,7}-\d{2}-\d)\b", b3 or b1 or text)
+    formul = _satir_degeri(b1 + b3 + b9, ["Kimyasal formül", "Molekül formül", "Formül",
+                                          "Molecular formula", "Formula"], n=40)
+    rev = _satir_degeri(b1 or bas, ["Revizyon tarih", "Düzenleme tarih", "Yeniden düzenleme",
+                                    "Revision date", "Hazırlama tarih"], n=30)
+    if not rev:
+        rev_m = re.search(r"(?i)(?:revizyon|revision|düzenleme)\D{0,20}(\d{1,2}[./]\d{1,2}[./]\d{2,4})", text[:4000])
+        rev = rev_m.group(1) if rev_m else None
+    uretici = _satir_degeri(b1, ["Üretici", "Tedarikçi", "Firma adı", "Şirket", "Company",
+                                 "Supplier", "Manufacturer"])
+    acil = _satir_degeri(b1, ["Acil durum telefon", "Acil telefon", "Emergency phone",
+                              "Emergency telephone", "UZEM", "Zehir Danışma"], n=60)
+
+    # ── Sınıflandırma (Bölüm 2) ──
+    kaynak2 = b2 or text
+    sinyal = None
+    sm = re.search(r"(?i)(?:sinyal kelimesi|uyarı kelimesi|signal word)\D{0,15}(tehlike|danger|uyarı|warning)", kaynak2)
+    if sm:
+        sinyal = "TEHLİKE" if sm.group(1).lower() in ("tehlike", "danger") else "UYARI"
+    elif re.search(r"\bTEHLİKE\b|\bDANGER\b", kaynak2):
+        sinyal = "TEHLİKE"
+    elif re.search(r"\bUYARI\b|\bWARNING\b", kaynak2):
+        sinyal = "UYARI"
+
+    def _kod_ifadeleri(rx, kaynaklar, limit):
+        gorulen, sonuc = set(), []
+        for kay in kaynaklar:
+            for m in re.finditer(rx, kay or ""):
+                kod = re.sub(r"\s", "", m.group(1))
+                if kod in gorulen:
+                    continue
+                gorulen.add(kod)
+                kuyruk = _temiz(m.group(2), 90) if m.lastindex and m.lastindex >= 2 else None
+                # Kuyruk gerçek bir açıklamaya benziyorsa ekle (harfle başlasın, kod listesi olmasın)
+                if kuyruk and re.match(r"^[A-Za-zÇĞİÖŞÜçğıöşü]", kuyruk) and not re.match(r"^[HP]\d{3}", kuyruk):
+                    sonuc.append(f"{kod} - {kuyruk}")
+                else:
+                    sonuc.append(kod)
+                if len(sonuc) >= limit:
+                    return sonuc
+        return sonuc
+
+    h_ifadeleri = _kod_ifadeleri(r"\b(EUH\s?\d{3}|H[2-4]\d{2})\b[\s:،,\-–]*([^\n]{0,90})",
+                                 [b2, b3, text], 7)
+    p_ifadeleri = _kod_ifadeleri(r"\b(P\d{3}(?:\s*\+\s*P\d{3}){0,3})\b[\s:،,\-–]*([^\n]{0,90})",
+                                 [b2, text], 5)
+    piktolar = sorted(set(re.findall(r"\bGHS0[1-9]\b", text)))
+    tehlike_sinifi = _satir_degeri(b2, ["Sınıflandırma", "Classification"], n=220)
+
+    # ── Fiziksel özellikler (Bölüm 9) ──
+    fiz = {
+        "gorunum": _satir_degeri(b9, ["Görünüm", "Fiziksel hal", "Fiziksel durum", "Appearance", "Physical state", "Form"], 60),
+        "renk": _satir_degeri(b9, ["Renk", "Colour", "Color"], 40),
+        "koku": _satir_degeri(b9, [r"Koku(?! eşi)", r"Odou?r(?! threshold)"], 50),
+        "parlama_noktasi": _satir_degeri(b9, ["Parlama nokta", "Alevlenme nokta", "Flash point"], 40),
+        "kaynama_noktasi": _satir_degeri(b9, ["Kaynama", "Boiling"], 50),
+        "erime_noktasi": _satir_degeri(b9, ["Erime", "Donma", "Melting", "Freezing"], 50),
+        "yogunluk": _satir_degeri(b9, ["Bağıl yoğunluk", "Yoğunluk", "Density", "Specific gravity"], 40),
+        "ph": _satir_degeri(b9, [r"pH değeri", r"pH\b"], 40),
+        "cozunurluk": _satir_degeri(b9, ["Suda çözünürlük", "Çözünürlük", "Solubility"], 70),
+        "buhar_basinci": _satir_degeri(b9, ["Buhar basınc", "Vapou?r pressure"], 40),
+    }
+
+    # ── Yol bazlı alanlar (Bölüm 4 ilk yardım, 11 sağlık etkileri, 8 KKD) ──
+    def _yollar(blok, n=180):
+        return {
+            "solunum": _satir_degeri(blok, ["Soluma", "Solunum", "Solunması", "Inhalation"], n),
+            "deri": _satir_degeri(blok, ["Deri ile temas", "Cilt ile temas", "Deri temas", "Cilt", "Deri", "Skin"], n),
+            "goz": _satir_degeri(blok, ["Göz ile temas", "Gözle temas", "Göz temas", "Göz", "Eye"], n),
+            "yutma": _satir_degeri(blok, ["Yutma", "Yutulması", "Yutulma", "Ağız", "Ingestion", "Swallow"], n),
+        }
+
+    ilk_yardim = _yollar(b4)
+    saglik = _yollar(b11 or b2, n=150)
+    kkd = {
+        "solunum": _satir_degeri(b8, ["Solunum sisteminin korunması", "Solunum korunması", "Solunum koruma", "Respiratory"], 120),
+        "el": _satir_degeri(b8, ["Ellerin korunması", "El korunması", "Eldiven", "Hand protection", "Gloves"], 120),
+        "goz": _satir_degeri(b8, ["Göz.{0,6}korunması", "Gözlerin korunması", "Gözlük", "Eye.{0,6}protection"], 120),
+        "vucut": _satir_degeri(b8, ["Cilt ve vücut", "Vücudun korunması", "Vücut korunması", "Cildin korunması",
+                                    "Koruyucu giysi", "Skin protection", "Body protection"], 120),
+    }
+
+    # ── Yangın (Bölüm 5) ──
+    yangin = {
+        "sondurme_araci": _satir_degeri(b5, ["Uygun söndürme", "Uygun söndürücü", "Söndürme araç", "Söndürücü madde",
+                                             "Suitable extinguishing"], 150),
+        "yasakli_sondurme": _satir_degeri(b5, ["Uygun olmayan söndür", "Kullanılmaması gereken", "Unsuitable extinguishing"], 120),
+        "ozel_tehlike": _satir_degeri(b5, ["Özel tehlike", "Yanma ürün", "bozunma ürün", "Specific hazard",
+                                           "hazardous combustion"], 150),
+    }
+
+    depolama = _satir_degeri(b7, ["Depolama koşul", "Güvenli depolama", "Depolama", "Storage"], 250) or _blok_ozeti(b7, 250)
+    dokulme = _satir_degeri(b6, ["Temizleme yöntem", "Temizlik için", "Toplama", "Methods for cleaning"], 250) or _blok_ozeti(b6, 250)
+    bertaraf = _satir_degeri(b13, ["Atık işleme", "Bertaraf yöntem", "Ürün atık", "Waste treatment", "Disposal"], 250) or _blok_ozeti(b13, 250)
+
+    # ── Bölüm 14 (ADR) ── eksikler adr_tablodan_tamamla ile Tablo A'dan dolar
+    _un_rx = r"(?i)\b(?:UN|BM)[\s\-.:]*(?:no|number|numarası|nummer)?[\s\-.:]{0,6}(\d{4})\b"
+    un_m = re.search(_un_rx, b14) or re.search(_un_rx, text)
+    kem_m = re.search(r"(?i)(?:tehlike tanımlama|kemler|hazard identification|HIN|Gefahrnummer)\D{0,40}?(X?\d{2,3})\b", b14 or text)
+    sinif_m = re.search(r"(?i)(?:ADR|taşıma|tehlike)\s*sınıf\w*\D{0,10}(\d(?:\.\d)?)\b", b14) \
+        or re.search(r"(?im)^[^\n]{0,30}(?:sınıf|class)\D{0,10}(\d(?:\.\d)?)\b", b14)
+    pg_m = re.search(r"(?i)(?:ambalaj(?:lama)? grubu|packing group)\D{0,12}\b(III|II|I)\b", b14 or text)
+    tunel_m = re.search(r"(?i)tünel[^\n]{0,40}?\(([A-E](?:/[A-E])?)\)", b14) or re.search(r"\(([A-E](?:/[A-E])?)\)", b14)
+    sevkiyat = _satir_degeri(b14, ["Uygun sevkiyat", "sevkiyat adı", "taşıma adı", "Proper shipping name"], 100)
+    deniz = None
+    dm = re.search(r"(?i)(?:deniz kirletici|marine pollutant)\D{0,15}(evet|hayır|yes|no)", b14 or text)
+    if dm:
+        deniz = "Evet" if dm.group(1).lower() in ("evet", "yes") else "Hayır"
+
+    data = {
+        "urun_adi": urun, "kimyasal_adi": kimyasal,
+        "cas_numarasi": cas_m.group(1) if cas_m else None,
+        "formul": formul, "revizyon_tarihi": rev, "uretici": uretici, "acil_telefon": acil,
+        "sinyal_kelimesi": sinyal, "ghs_piktogramlari": piktolar,
+        "tehlike_sinifi": tehlike_sinifi,
+        "h_ifadeleri": h_ifadeleri, "p_ifadeleri": p_ifadeleri,
+        "fiziksel_ozellikler": fiz, "saglik_tehlikeleri": saglik, "ilk_yardim": ilk_yardim,
+        "yangin": yangin, "kkd": kkd,
+        "depolama": depolama, "dokulmede_yapilacaklar": dokulme, "bertaraf": bertaraf,
+        "adr_bolum14": {
+            "un_numarasi": f"UN {un_m.group(1)}" if un_m else None,
+            "kemler_kodu": kem_m.group(1) if kem_m else None,
+            "sevkiyat_adi": sevkiyat,
+            "adr_sinifi": sinif_m.group(1) if sinif_m else None,
+            "alt_tehlike": None,
+            "ambalaj_grubu": pg_m.group(1) if pg_m else None,
+            "deniz_kirletici": deniz,
+            "tunel_kodu": f"({tunel_m.group(1)})" if tunel_m else None,
+            "etiketler": [], "ozel_hukumler": None,
+        },
+    }
+    return data
+
+
 def _model_chain(engine: str, primary: str) -> list:
     """Bir motor için denenecek model sırasını döndürür: önce kullanıcının seçtiği model (primary),
     sonra o motorun diğer yedek modelleri (tekrarsız)."""
@@ -1196,14 +1423,19 @@ ENGINE_LABELS = {
     "openai": "🤖 OpenAI",
     "claude": "🧠 Claude",
     "ollama": "🖥️ Ollama (yerel)",
+    "kural": "📐 Kural Tabanlı (AI'sız)",
 }
 # Failover sırası: ücretsiz/yüksek kapasiteli motorlar önce.
-FAILOVER_ORDER = ["groq", "gemini", "openrouter", "openai", "claude", "ollama"]
+# 'kural' anahtar/kota gerektirmez; zincire eklenirse EN SONA konur ki
+# tüm AI kotaları dolduğunda işlem durmak yerine AI'sız modda tamamlansın.
+FAILOVER_ORDER = ["groq", "gemini", "openrouter", "openai", "claude", "ollama", "kural"]
 
 
 def _call_single_model(text, engine, model, ollama_url,
                        gemini_api_key, groq_api_key, openai_api_key, claude_api_key, openrouter_api_key):
     """Tek bir motoru, tek bir modelle çağırır (model zinciri YOK)."""
+    if engine == "kural":
+        return analyze_rule_based(text)
     if engine == "gemini":
         return call_gemini(text, gemini_api_key, model)
     elif engine == "groq":
@@ -1697,8 +1929,9 @@ def main():
             "🤖 OpenAI — ücretli",
             "🧠 Claude — en kaliteli, ücretli",
             "🖥️ Ollama (yerel) — sınırsız, donanıma bağlı",
+            "📐 Kural Tabanlı — AI'sız, anahtar/kota YOK, sınırsız",
         ]
-        engine_keys = ["groq", "gemini", "openrouter", "openai", "claude", "ollama"]
+        engine_keys = ["groq", "gemini", "openrouter", "openai", "claude", "ollama", "kural"]
         default_idx = 5 if _local_ok else 0  # yerel varsa Ollama, yoksa Groq
         engine_label = st.radio("Motor seç", engine_options, index=default_idx,
                                 label_visibility="collapsed")
@@ -1792,6 +2025,18 @@ def main():
                 icon="⚠️"
             )
 
+        elif engine == "kural":
+            model = "-"
+            st.success("📐 **Kural Tabanlı mod** — anahtar, kota, internet AI'sı gerekmez; sınırsız ve anında.")
+            st.caption(
+                "MSDS/SDS belgelerinin standart 16 bölümlü GHS yapısından desen eşleştirmeyle veri çıkarır. "
+                "**Çok güvenilir:** H/P kodları, CAS, UN numarası, sinyal kelimesi, fiziksel özellikler, "
+                "Bölüm 14 (Kemler kodu ve etiketler ADR Tablo A'dan tamamlanır). "
+                "**Daha zayıf:** ilk yardım / depolama gibi serbest metinler AI özeti kadar akıcı olmaz; "
+                "belgeden kısaltılarak alınır. Taranmış (görüntü) PDF'lerde çalışmaz. "
+                "Düzeni alışılmadık belgelerde bazı alanlar boş kalabilir — kartta 'Belirtilmemiş' görünür."
+            )
+
         else:  # gemini
             if not GEMINI_SDK_OK:
                 st.error("✗ google-genai kurulu değil")
@@ -1850,6 +2095,14 @@ def main():
             else:
                 st.info("Henüz anahtar girilmedi.")
 
+            kural_yedek = st.checkbox(
+                "📐 Kotalar dolarsa Kural Tabanlı (AI'sız) modla devam et",
+                value=True,
+                help="Toplu işlemde tüm AI motorlarının kotası dolarsa, kalan dosyalar hata "
+                     "vermek yerine anahtar/kota gerektirmeyen kural tabanlı modla işlenir. "
+                     "Yapısal alanlar (H/P kodları, UN, Kemler, fiziksel özellikler) yine çıkar; "
+                     "serbest metin özetleri daha ham olur.")
+
         # Tüm anahtarlar session_state'ten okunur — HER KULLANICI KENDİ anahtarını girer.
         # (Anahtar diske/sunucuya yazılmaz, başka kullanıcıya geçmez, sadece bu oturumda yaşar.)
         groq_api_key = st.session_state.get("api_key_groq", "") or ""
@@ -1866,7 +2119,7 @@ def main():
         co_color = st.color_picker("Tema rengi", "#1a237e")
 
         st.divider()
-        st.caption("⚗️ MSDS Özetleyici v1.3\nGroq + Gemini + OpenAI + Claude + Ollama · Otomatik yedekleme")
+        st.caption("⚗️ MSDS Özetleyici v1.4\nGroq + Gemini + OpenAI + Claude + Ollama + Kural Tabanlı · Otomatik yedekleme")
 
     company = {"name": co_name, "dept": co_dept, "color": co_color, "logo": None}
     if co_logo:
@@ -1885,6 +2138,9 @@ def main():
     }
 
     def engine_available(eng: str) -> bool:
+        if eng == "kural":
+            # Doğrudan seçilmişse her zaman hazır; yedek olarak ise kullanıcının onayına bağlı
+            return engine == "kural" or kural_yedek
         if eng == "ollama":
             return ollama_ok
         if eng == "gemini":
@@ -1907,6 +2163,7 @@ def main():
         "openai": "gpt-4o-mini",
         "claude": "claude-haiku-4-5-20251001",
         "ollama": model if engine == "ollama" else "llama3.2:3b",
+        "kural": "-",
     }
     # Seçili motorun modelini onun varsayılanına yaz (kullanıcı ne seçtiyse)
     default_models[engine] = model
@@ -2201,6 +2458,7 @@ def main():
                             "openai": 60,      # ücretli, daha yüksek
                             "claude": 50,      # ücretli
                             "ollama": 0,       # yerel, limit yok
+                            "kural": 0,        # AI'sız, limit yok
                         }
                         eng_now = current_engine["val"]
                         rpm = rpm_map.get(eng_now, 30)
