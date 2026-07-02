@@ -56,6 +56,77 @@ GHS_IMG = {
 }
 
 # ── YARDIMCI FONKSİYONLAR ───────────────────────────────────────
+# ── ADR Tablo A (Bölüm 3.2) yerel veri kaynağı ────────────────────────────
+# adr_verisi.py, resmi ADR A Tablosundan üretilmiş UN No → Kemler kodu (tehlike
+# tanımlama numarası), sınıf, ambalaj grubu ve tünel kodu sözlüğüdür. Dosya
+# yoksa uygulama yine çalışır; sadece tablodan tamamlama yapılmaz.
+try:
+    from adr_verisi import ADR_TABLO
+except Exception:
+    ADR_TABLO = {}
+
+
+def _norm_pg(v) -> str:
+    """Ambalaj grubunu 'I/II/III' biçimine getirir ('PG II', '2', 'ii' vb. girişler için)."""
+    s = str(v or "").upper().replace("PG", "").replace("AMBALAJ GRUBU", "").strip()
+    return {"1": "I", "2": "II", "3": "III"}.get(s, s)
+
+
+def adr_tablodan_tamamla(data: dict) -> dict:
+    """BÖLÜM 14'ten AI'nın çekemediği alanları resmi ADR Tablo A'dan tamamlar.
+    En sık eksik kalan alan turuncu plakanın ÜST yarısındaki tehlike tanımlama
+    (Kemler) kodudur: MSDS'lerin çoğu bunu yazmaz, ama UN numarası biliniyorsa
+    Tablo A'dan kesin olarak bulunur. Ayrıca boşsa sınıf, ambalaj grubu ve
+    tünel kodu da doldurulur. AI'nın belgeden okuduğu değerlerin ÜZERİNE YAZMAZ."""
+    try:
+        if not ADR_TABLO or not isinstance(data, dict):
+            return data
+        adr = data.get("adr_bolum14")
+        if not isinstance(adr, dict):
+            return data
+        m = re.search(r"(\d{3,4})", str(adr.get("un_numarasi") or ""))
+        if not m:
+            return data
+        varyantlar = ADR_TABLO.get(m.group(1).zfill(4))
+        if not varyantlar:
+            return data
+
+        # Aynı UN birden çok satırda olabilir (farklı ambalaj grubu → farklı kod).
+        # Önce belgedeki ambalaj grubuyla, sonra ADR sınıfıyla eşleştir; olmazsa
+        # Kemler kodu dolu ilk satırı al.
+        secim = None
+        pg = _norm_pg(adr.get("ambalaj_grubu"))
+        if pg:
+            pg_es = [v for v in varyantlar if v.get("pg") == pg]
+            secim = next((v for v in pg_es if v.get("kemler")), pg_es[0] if pg_es else None)
+        if secim is None and adr.get("adr_sinifi"):
+            sn = str(adr["adr_sinifi"]).strip()
+            sn_es = [v for v in varyantlar if str(v.get("sinif", "")).strip() == sn]
+            secim = next((v for v in sn_es if v.get("kemler")), sn_es[0] if sn_es else None)
+        if secim is None:
+            secim = next((v for v in varyantlar if v.get("kemler")), varyantlar[0])
+
+        eslesen = {"kemler_kodu": "kemler", "adr_sinifi": "sinif",
+                   "ambalaj_grubu": "pg", "tunel_kodu": "tunel"}
+        tamamlanan = []
+        for alan, kaynak in eslesen.items():
+            if not ok(adr.get(alan)) and secim.get(kaynak):
+                adr[alan] = secim[kaynak]
+                tamamlanan.append(alan)
+        # Etiket listesi (5.2.2 plakaları) boşsa tablodan doldur — "6.1 +3" → ["6.1", "3"]
+        if not adr.get("etiketler") and secim.get("etiket"):
+            etiketler = [p.strip() for p in re.split(r"[+,/]", secim["etiket"]) if p.strip()]
+            if etiketler:
+                adr["etiketler"] = etiketler
+                tamamlanan.append("etiketler")
+        if "kemler_kodu" in tamamlanan:
+            adr["_tablo_notu"] = ("Tehlike tanımlama (Kemler) kodu belgede yazmıyordu; "
+                                  "UN numarasına göre resmi ADR Tablo A'dan eklendi.")
+    except Exception:
+        pass  # tamamlama hiçbir koşulda analizi düşürmemeli
+    return data
+
+
 def ok(v):
     return bool(v and str(v).strip() and str(v).strip() not in ("null", "None", "—", "-"))
 
@@ -111,6 +182,158 @@ def safe_filename(name: str, fallback: str = "MSDS_Ozet") -> str:
     s = re.sub(r"[^\w\s-]", "", s).strip()
     s = re.sub(r"\s+", "_", s)
     return s or fallback
+
+# ═══ ADR sınıf etiketleri (tehlike elmasları) — Bölüm 14 için ═══
+# Öncelikli kaynak: adr_etiket_gorselleri.py (ADR 5.2.2'ye sadık orijinal görseller).
+# Modül yoksa aşağıdaki basitleştirilmiş SVG çizimleri yedek olarak kullanılır.
+try:
+    from adr_etiket_gorselleri import ADR_ETIKET_IMG
+except Exception:
+    ADR_ETIKET_IMG = {}
+
+_adr_uid = [0]  # SVG clipPath id'leri sayfa genelinde benzersiz olmalı (birleşik HTML'de çakışmasın)
+
+
+def _adr_flame(c):
+    return (f'<path d="M25 6.5c2.6 4.2 7.2 6.3 7.2 11.8 0 4.6-3.2 7.9-7.2 7.9'
+            f's-7.2-3.3-7.2-7.9c0-2.6 1.3-4.5 2.7-6.2.4 1.8 1.3 2.8 2.8 3.3'
+            f'-.8-3.1.2-6.1 1.7-8.9z" fill="{c}"/>')
+
+
+def _adr_skull(c, bg):
+    return (f'<circle cx="25" cy="12.5" r="5.2" fill="{c}"/>'
+            f'<circle cx="23.1" cy="11.6" r="1.2" fill="{bg}"/><circle cx="26.9" cy="11.6" r="1.2" fill="{bg}"/>'
+            f'<rect x="23.6" y="15.6" width="2.8" height="2.4" fill="{c}"/>'
+            f'<g stroke="{c}" stroke-width="2" stroke-linecap="round">'
+            f'<line x1="19" y1="19.5" x2="31" y2="23.5"/><line x1="31" y1="19.5" x2="19" y2="23.5"/></g>')
+
+
+def _adr_trefoil(c):
+    w = f'<path d="M25 14.2 L21.2 7.2 A8.2 8.2 0 0 1 28.8 7.2 Z" fill="{c}"/>'
+    return (f'<g>{w}<g transform="rotate(120 25 15)">{w}</g><g transform="rotate(240 25 15)">{w}</g>'
+            f'<circle cx="25" cy="15" r="2.1" fill="{c}"/></g>')
+
+
+def _adr_burst(c):
+    lines = "".join(f'<line x1="25" y1="15" x2="{25+11*x}" y2="{15+9*y}"/>' for x, y in
+                    [(0, -1), (0.71, -0.71), (1, 0), (0.71, 0.71), (0, 1), (-0.71, 0.71), (-1, 0), (-0.71, -0.71)])
+    return (f'<g stroke="{c}" stroke-width="2.4" stroke-linecap="round">{lines}</g>'
+            f'<circle cx="25" cy="15" r="4" fill="{c}"/>')
+
+
+def _adr_tubes(c):
+    return (f'<g fill="{c}">'
+            f'<rect x="17.5" y="6.5" width="4" height="10" rx="1.6" transform="rotate(33 19.5 11.5)"/>'
+            f'<rect x="28.5" y="6.5" width="4" height="10" rx="1.6" transform="rotate(-33 30.5 11.5)"/>'
+            f'<circle cx="15.5" cy="19.5" r="1.2"/><circle cx="34.5" cy="19.5" r="1.2"/>'
+            f'<rect x="11.5" y="21.8" width="10" height="2.2"/><rect x="28.5" y="21.8" width="10" height="2.2"/></g>')
+
+
+def _adr_biohazard(c):
+    return (f'<g fill="none" stroke="{c}" stroke-width="1.8">'
+            f'<circle cx="25" cy="11.5" r="4"/><circle cx="21.2" cy="17.5" r="4"/><circle cx="28.8" cy="17.5" r="4"/></g>'
+            f'<circle cx="25" cy="15" r="1.6" fill="{c}"/>')
+
+
+def _adr_cylinder(c):
+    return f'<rect x="21.5" y="7.5" width="7" height="17" rx="3" fill="{c}"/><rect x="23.5" y="5.5" width="3" height="3" fill="{c}"/>'
+
+
+_S = "#111"  # siyah sembol/kenar
+_ADR_ETIKET = {
+    # kod: (zemin, sembol, numara, numara rengi, kenar rengi, ek katman)
+    "1":   ("#FF7900", _adr_burst(_S),          "1",   _S,    _S, ""),
+    "1.4": ("#FF7900", "",                      "1.4", _S,    _S, '<text x="25" y="24" font-size="13" font-weight="800" text-anchor="middle" fill="#111" font-family="Arial">1.4</text>'),
+    "1.5": ("#FF7900", "",                      "1.5", _S,    _S, '<text x="25" y="24" font-size="13" font-weight="800" text-anchor="middle" fill="#111" font-family="Arial">1.5</text>'),
+    "1.6": ("#FF7900", "",                      "1.6", _S,    _S, '<text x="25" y="24" font-size="13" font-weight="800" text-anchor="middle" fill="#111" font-family="Arial">1.6</text>'),
+    "2.1": ("#E4001B", _adr_flame("#fff"),      "2",   "#fff", _S, ""),
+    "2.2": ("#00843D", _adr_cylinder("#fff"),   "2",   "#fff", _S, ""),
+    "2.3": ("#fff",    _adr_skull(_S, "#fff"),  "2",   _S,    _S, ""),
+    "3":   ("#E4001B", _adr_flame("#fff"),      "3",   "#fff", _S, ""),
+    "4.1": ("stripes41", _adr_flame(_S),        "4",   _S,    _S, '<circle cx="25" cy="41" r="6.5" fill="#fff"/>'),
+    "4.2": ("half_wr", _adr_flame(_S),          "4",   _S,    _S, ""),
+    "4.3": ("#0072CE", _adr_flame("#fff"),      "4",   "#fff", _S, ""),
+    "5.1": ("#FFCD00", _adr_flame(_S) + f'<circle cx="25" cy="25" r="3.4" fill="none" stroke="{_S}" stroke-width="2.2"/>', "5.1", _S, _S, ""),
+    "5.2": ("half_ry", _adr_flame("#fff"),      "5.2", _S,    _S, ""),
+    "6.1": ("#fff",    _adr_skull(_S, "#fff"),  "6",   _S,    _S, ""),
+    "6.2": ("#fff",    _adr_biohazard(_S),      "6",   _S,    _S, ""),
+    "7":   ("half_yw", _adr_trefoil(_S),        "7",   _S,    _S, ""),
+    "8":   ("half_wb", _adr_tubes(_S),          "8",   "#fff", _S, ""),
+    "9":   ("stripes9", "",                     "9",   _S,    _S, '<line x1="21" y1="45" x2="29" y2="45" stroke="#111" stroke-width="1.6"/>'),
+    "9A":  ("stripes9", '<rect x="19" y="14" width="12" height="7" rx="1" fill="none" stroke="#111" stroke-width="1.6"/><rect x="22" y="11.5" width="2.5" height="2.5" fill="#111"/><rect x="25.5" y="11.5" width="2.5" height="2.5" fill="#111"/>', "9", _S, _S, '<line x1="21" y1="45" x2="29" y2="45" stroke="#111" stroke-width="1.6"/>'),
+}
+
+_ADR_ETIKET_ADLARI = {
+    "1": "Patlayıcı", "1.4": "Patlayıcı 1.4", "1.5": "Patlayıcı 1.5", "1.6": "Patlayıcı 1.6",
+    "2.1": "Alevlenir gaz", "2.2": "Alevlenmez gaz", "2.3": "Zehirli gaz",
+    "3": "Alevlenir sıvı", "4.1": "Alevlenir katı", "4.2": "Kendiliğinden yanan",
+    "4.3": "Suyla tehlikeli", "5.1": "Yükseltgen", "5.2": "Organik peroksit",
+    "6.1": "Zehirli", "6.2": "Bulaşıcı", "7": "Radyoaktif",
+    "8": "Aşındırıcı", "9": "Muhtelif tehlike", "9A": "Lityum piller",
+}
+
+
+def _adr_norm_kod(kod: str) -> str:
+    """'Sınıf 3', '3.', '7X', '7E' gibi girişleri sözlük anahtarına indirger."""
+    s = str(kod or "").upper().replace("SINIF", "").replace("CLASS", "").strip().strip(".")
+    if s.startswith("7"):
+        return "7"
+    return s
+
+
+def adr_etiket_elmasi(kod) -> str:
+    """Verilen ADR etiket kodu için baklava (elmas) biçimli tehlike etiketi döndürür.
+    Öncelik: adr_etiket_gorselleri.py içindeki ORİJİNAL etiket görselleri (ADR 5.2.2'ye
+    sadık). Görsel yoksa (örn. Sınıf 1 veya modül dosyası eksikse) basitleştirilmiş
+    SVG çizimine düşer. Kod hiç tanınmıyorsa boş döner (çağıran metin rozetine düşer)."""
+    key = _adr_norm_kod(kod)
+
+    # 1) Orijinal görsel varsa onu kullan
+    img = ADR_ETIKET_IMG.get(key)
+    if img:
+        ad = _ADR_ETIKET_ADLARI.get(key, "")
+        return (f'<div style="text-align:center;width:46px;">'
+                f'<img src="{img}" alt="ADR {key}" width="42" height="42" '
+                f'style="display:block;margin:0 auto;" />'
+                f'<div style="font-size:7px;color:#555;line-height:1.2;margin-top:2px;">{ad}</div>'
+                f'</div>')
+
+    # 2) Yedek: basitleştirilmiş çizim
+    conf = _ADR_ETIKET.get(key)
+    if not conf:
+        return ""
+    zemin, sembol, numara, num_c, kenar, ekstra = conf
+    _adr_uid[0] += 1
+    cid = f"adrclip{_adr_uid[0]}"
+
+    if zemin == "half_wr":      # üst beyaz / alt kırmızı (4.2)
+        bg = '<rect width="50" height="25" fill="#fff"/><rect y="25" width="50" height="25" fill="#E4001B"/>'
+    elif zemin == "half_ry":    # üst kırmızı / alt sarı (5.2)
+        bg = '<rect width="50" height="25" fill="#E4001B"/><rect y="25" width="50" height="25" fill="#FFCD00"/>'
+    elif zemin == "half_yw":    # üst sarı / alt beyaz (7)
+        bg = '<rect width="50" height="25" fill="#FFCD00"/><rect y="25" width="50" height="25" fill="#fff"/>'
+    elif zemin == "half_wb":    # üst beyaz / alt siyah (8)
+        bg = '<rect width="50" height="25" fill="#fff"/><rect y="25" width="50" height="25" fill="#111"/>'
+    elif zemin == "stripes41":  # beyaz üzerine dikey kırmızı çizgiler (4.1)
+        bars = "".join(f'<rect x="{x}" width="3.6" height="50" fill="#E4001B"/>' for x in range(2, 50, 7))
+        bg = f'<rect width="50" height="50" fill="#fff"/>{bars}'
+    elif zemin == "stripes9":   # üst yarıda dikey siyah çizgiler (9)
+        bars = "".join(f'<rect x="{x}" width="2.6" height="25" fill="#111"/>' for x in range(4, 46, 6))
+        bg = f'<rect width="50" height="50" fill="#fff"/>{bars}'
+    else:
+        bg = f'<rect width="50" height="50" fill="{zemin}"/>'
+
+    return (f'<div style="text-align:center;width:46px;">'
+            f'<svg width="42" height="42" viewBox="0 0 50 50" xmlns="http://www.w3.org/2000/svg" style="display:block;margin:0 auto;">'
+            f'<defs><clipPath id="{cid}"><polygon points="25,1.5 48.5,25 25,48.5 1.5,25"/></clipPath></defs>'
+            f'<g clip-path="url(#{cid})">{bg}{sembol}{ekstra}</g>'
+            f'<polygon points="25,1.5 48.5,25 25,48.5 1.5,25" fill="none" stroke="{kenar}" stroke-width="2"/>'
+            f'<text x="25" y="{44 if len(numara) > 1 else 45}" font-size="{9 if len(numara) > 1 else 11}" '
+            f'font-weight="800" text-anchor="middle" fill="{num_c}" font-family="Arial,Helvetica,sans-serif">{numara}</text>'
+            f'</svg>'
+            f'<div style="font-size:7px;color:#555;line-height:1.2;margin-top:2px;">{_ADR_ETIKET_ADLARI.get(key, "")}</div>'
+            f'</div>')
+
 
 def make_diamond(code):
     if code not in GHS_IMG:
@@ -202,7 +425,25 @@ def generate_html_card(s: dict, company: dict = None, fname: str = "") -> str:
     # ADR Bölüm 14 — her zaman gösterilir (veri yoksa da bölüm görünür)
     kemler_top = adr.get("kemler_kodu") if ok(adr.get("kemler_kodu")) else "–"
     kemler_bot = (adr.get("un_numarasi") or "–").replace("UN", "").strip() or "–"
-    etk_html   = "".join(f'<span style="background:#fff3e0;border:1px solid #e65100;color:#bf360c;font-size:8px;font-weight:700;padding:1px 5px;border-radius:2px;">{e}</span>' for e in etk) if etk else ""
+    # ADR tehlike etiketleri: görsel elmas plakalar. Etiket listesi boşsa
+    # sınıf + alt tehlikeden türet. Tanınmayan kodlar metin rozetine düşer.
+    etk_kaynak = list(etk) if etk else [x for x in [adr.get("adr_sinifi"), adr.get("alt_tehlike")] if ok(x)]
+    gorulen, etk_parcalar = set(), []
+    for e in etk_kaynak:
+        for parca in re.split(r"[+,/]", str(e)):
+            parca = parca.strip()
+            if not parca:
+                continue
+            key = _adr_norm_kod(parca)
+            if key in gorulen:
+                continue
+            gorulen.add(key)
+            elmas = adr_etiket_elmasi(parca)
+            if elmas:
+                etk_parcalar.append(elmas)
+            else:
+                etk_parcalar.append(f'<span style="background:#fff3e0;border:1px solid #e65100;color:#bf360c;font-size:8px;font-weight:700;padding:1px 5px;border-radius:2px;align-self:center;">{parca}</span>')
+    etk_html = "".join(etk_parcalar)
 
     id_rows = ""
     for lbl, field, style in [
@@ -225,6 +466,11 @@ def generate_html_card(s: dict, company: dict = None, fname: str = "") -> str:
     sevkiyat = f'<div style="font-size:9.5px;color:#111;font-weight:500;line-height:1.5;margin-bottom:8px;">{adr["sevkiyat_adi"]}</div>' if ok(adr.get("sevkiyat_adi")) else '<div style="font-size:9px;color:#bbb;margin-bottom:8px;">Belirtilmemiş</div>'
     ozel     = f'<div style="font-size:9px;color:#333;line-height:1.6;">{adr["ozel_hukumler"]}</div>' if ok(adr.get("ozel_hukumler")) else '<span style="font-size:9px;color:#bbb;">Belirtilmemiş</span>'
 
+    # Kemler kodu resmi ADR Tablo A'dan tamamlandıysa kartta şeffafça belirt
+    tablo_notu = ""
+    if ok(adr.get("_tablo_notu")):
+        tablo_notu = f'<div style="margin-bottom:6px;padding:4px 8px;background:#fff8e1;border-radius:2px;border-left:3px solid #e65100;"><span style="font-size:8.5px;color:#6d4c00;line-height:1.4;">ℹ {adr["_tablo_notu"]}</span></div>'
+
     # Bu üründe taşıma verisi yoksa kullanıcıya net bilgi notu
     not_regulated = ""
     if not has_adr:
@@ -233,6 +479,7 @@ def generate_html_card(s: dict, company: dict = None, fname: str = "") -> str:
     adr_section = f"""<div style="border-top:1px solid #e0e0e0;">
   {sh("🚛","Bölüm 14 — Taşımacılık Bilgileri (ADR / RID / IMDG)","#4a148c")}
   {not_regulated}
+  {tablo_notu}
   <div style="display:grid;grid-template-columns:auto 1fr 1fr 1fr;">
     <div style="padding:8px 14px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;border-right:1px solid #e0e0e0;">
       <div style="width:62px;border:2.5px solid #e65100;border-radius:2px;overflow:hidden;font-family:monospace;text-align:center;box-shadow:1px 2px 4px rgba(0,0,0,.18);">
@@ -240,7 +487,7 @@ def generate_html_card(s: dict, company: dict = None, fname: str = "") -> str:
         <div style="background:#FF8F00;padding:4px;font-size:14px;font-weight:800;color:#1a1a1a;">{kemler_bot}</div>
       </div>
       <div style="font-size:7.5px;color:#555;text-align:center;line-height:1.4;">Kemler<br>Plakası</div>
-      {f'<div style="display:flex;gap:3px;flex-wrap:wrap;justify-content:center;">{etk_html}</div>' if etk_html else ""}
+      {f'<div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:center;align-items:flex-start;margin-top:2px;">{etk_html}</div><div style="font-size:7.5px;color:#555;text-align:center;line-height:1.4;">Tehlike<br>Etiketleri</div>' if etk_html else ""}
     </div>
     <div style="padding:8px 10px;border-right:1px solid #e0e0e0;">
       <div style="font-size:9px;font-weight:500;color:#4a148c;margin-bottom:4px;border-bottom:.5px solid #ede7f6;padding-bottom:2px;">Kimlik &amp; Sınıf</div>
@@ -449,7 +696,11 @@ BÖLÜM 14 (Taşımacılık) için önemli: Belgenin "BÖLÜM 14" / "Taşımacı
 - un_numarasi: ADR/RID için verilen UN numarasını kullan (örn. "UN 2790"). Farklı modlar (IMDG/ICAO) farklı numara verirse ADR/RID'i tercih et.
 - adr_sinifi: ADR/RID sınıfı (örn. "8"). alt_tehlike: ikincil risk (örn. "3").
 - ambalaj_grubu: I, II veya III. tunel_kodu: tünel kısıtlama kodu (örn. "D/E").
-- sevkiyat_adi: uygun sevkiyat adı. kemler_kodu varsa al, yoksa null.
+- sevkiyat_adi: uygun sevkiyat adı.
+- kemler_kodu: "Tehlike tanımlama numarası", "Hazard identification number", "HIN", "Kemler",
+  "Gefahrnummer" veya "Nr. zur Kennzeichnung der Gefahr" başlıklarıyla geçebilir; 2-3 haneli
+  sayıdır ve başında X olabilir (örn. "33", "80", "X886"). Bulursan al, belgede yoksa null bırak
+  (uydurma — eksikse uygulama resmi ADR tablosundan tamamlar).
 - Bilgi gerçekten yoksa null yaz; ama metinde varsa MUTLAKA doldur.
 
 DEPOLAMA (depolama): BÖLÜM 7 "Elleçleme ve depolama" / "Güvenli depolama için koşullar" kısmını oku.
@@ -1009,6 +1260,9 @@ def call_ai(text: str, engine: str, model: str, ollama_url: str = "",
     except Exception:
         pass
 
+    # Güvenlik ağı 2: Kemler kodu vb. eksikse resmi ADR Tablo A'dan tamamla
+    data = adr_tablodan_tamamla(data)
+
     return data
 
 
@@ -1166,6 +1420,43 @@ def diagnose_error(err_msg: str) -> dict:
         "aciklama": "Sınıflandırılamayan bir hata oluştu.",
         "cozum": "Aşağıdaki teknik mesajı kopyalayıp tekrar deneyin. Sürerse desteğe iletin.",
     }
+
+
+def kart_ac_widget(card_html: str, btn_id: str, label: str = "🖼️ Kartı Aç") -> str:
+    """Kart HTML'ini BLOB URL ile yeni sekmede açan buton bileşeni döndürür.
+    data: URL'leri tarayıcılar üst düzey gezinmede engeller; blob: URL takılmaz."""
+    b64 = base64.b64encode(card_html.encode("utf-8")).decode()
+    return f"""
+<button id="{btn_id}" style="width:100%;padding:7px 4px;background:#1565c0;color:#fff;
+  border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:500;">{label}</button>
+<script>
+(function(){{
+  var b64 = "{b64}";
+  function b64ToBlob(b64Data){{
+    var byteChars = atob(b64Data);
+    var bytes = new Uint8Array(byteChars.length);
+    for (var i=0; i<byteChars.length; i++) bytes[i] = byteChars.charCodeAt(i);
+    return new Blob([bytes], {{type: "text/html"}});
+  }}
+  var btn = document.getElementById("{btn_id}");
+  if (btn) {{
+    btn.addEventListener("click", function(){{
+      try {{
+        var blob = b64ToBlob(b64);
+        var url = URL.createObjectURL(blob);
+        var win = window.open(url, "_blank");
+        if (!win) {{
+          var a = document.createElement("a");
+          a.href = url; a.target = "_blank"; a.rel = "noopener";
+          document.body.appendChild(a); a.click(); a.remove();
+        }}
+        setTimeout(function(){{ URL.revokeObjectURL(url); }}, 60000);
+      }} catch(e) {{ alert("Kart açılamadı: " + e.message); }}
+    }});
+  }}
+}})();
+</script>
+"""
 
 
 def analyze_with_failover(text, chain, models, keys, ollama_url, exhausted, on_switch=None):
@@ -1835,21 +2126,30 @@ def main():
                         switch_note.info(f"ℹ️ {prev} kotası doldu — kalan dosyalar **{now}** ile sürdürülüyor.")
                         current_engine["val"] = eng
 
-                def _show_live(rec):
-                    # Bir dosya biter bitmez canlı listeye anında ekle
-                    if "error" in rec:
-                        diag = diagnose_error(rec["error"])
-                        live_list.markdown(
-                            f"❌ **{rec['filename']}** — <span style='color:#c00;'>{diag['etiket']}</span> "
-                            f"<span style='color:#999;font-size:11px;'>{diag['kaynak']}</span>",
-                            unsafe_allow_html=True)
-                    else:
-                        urun = (rec.get("data") or {}).get("urun_adi") or rec["filename"]
-                        eng_lbl = ENGINE_LABELS.get(rec.get("engine", ""), "")
-                        live_list.markdown(
-                            f"✅ **{urun}** "
-                            f"<span style='color:#999;font-size:11px;'>· {eng_lbl}</span>",
-                            unsafe_allow_html=True)
+                def _show_live(rec, idx):
+                    # Bir dosya biter bitmez canlı listeye anında ekle — kart HAZIRSA
+                    # butonuyla birlikte, böylece toplu işlem bitmeden ürün kartı açılabilir.
+                    with live_list:
+                        if "error" in rec:
+                            diag = diagnose_error(rec["error"])
+                            st.markdown(
+                                f"❌ **{rec['filename']}** — <span style='color:#c00;'>{diag['etiket']}</span> "
+                                f"<span style='color:#999;font-size:11px;'>{diag['kaynak']}</span>",
+                                unsafe_allow_html=True)
+                        else:
+                            urun = (rec.get("data") or {}).get("urun_adi") or rec["filename"]
+                            eng_lbl = ENGINE_LABELS.get(rec.get("engine", ""), "")
+                            lc1, lc2 = st.columns([3.6, 1.4])
+                            with lc1:
+                                st.markdown(
+                                    f"✅ **{urun}** "
+                                    f"<span style='color:#999;font-size:11px;'>· {eng_lbl}</span>",
+                                    unsafe_allow_html=True)
+                            with lc2:
+                                if rec.get("html"):
+                                    components.html(
+                                        kart_ac_widget(rec["html"], f"livebtn_{idx}"),
+                                        height=44)
 
                 for idx, f in enumerate(batch_files):
                     active_label = ENGINE_LABELS.get(current_engine["val"], current_engine["val"])
@@ -1886,7 +2186,7 @@ def main():
                         record["error"] = str(e)
 
                     results.append(record)
-                    _show_live(record)   # tamamlanan ürünü ANINDA canlı listede göster
+                    _show_live(record, idx)   # tamamlanan ürünü ANINDA canlı listede göster (kart butonuyla)
                     progress.progress((idx + 1) / total)
 
                     # Dosyalar arası bekleme: AKTİF MOTORUN dakikalık istek limitine (RPM) göre.
@@ -1976,41 +2276,7 @@ def main():
                         # gezinmede engeller (about:blank açılır); blob: URL bu kısıtlamaya takılmaz.
                         card_html = r.get("html", "")
                         if card_html:
-                            b64 = base64.b64encode(card_html.encode("utf-8")).decode()
-                            btn_id = f"openbtn_{i}"
-                            open_widget = f"""
-<button id="{btn_id}" style="width:100%;padding:7px 4px;background:#1565c0;color:#fff;
-  border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:500;">🖼️ Kartı Aç</button>
-<script>
-(function(){{
-  var b64 = "{b64}";
-  function b64ToBlob(b64Data){{
-    var byteChars = atob(b64Data);
-    var bytes = new Uint8Array(byteChars.length);
-    for (var i=0; i<byteChars.length; i++) bytes[i] = byteChars.charCodeAt(i);
-    return new Blob([bytes], {{type: "text/html"}});
-  }}
-  var btn = document.getElementById("{btn_id}");
-  if (btn) {{
-    btn.addEventListener("click", function(){{
-      try {{
-        var blob = b64ToBlob(b64);
-        var url = URL.createObjectURL(blob);
-        var win = window.open(url, "_blank");
-        if (!win) {{
-          // Pop-up engellendiyse: indirilebilir bağlantıya düş
-          var a = document.createElement("a");
-          a.href = url; a.target = "_blank"; a.rel = "noopener";
-          document.body.appendChild(a); a.click(); a.remove();
-        }}
-        setTimeout(function(){{ URL.revokeObjectURL(url); }}, 60000);
-      }} catch(e) {{ alert("Kart açılamadı: " + e.message); }}
-    }});
-  }}
-}})();
-</script>
-"""
-                            components.html(open_widget, height=44)
+                            components.html(kart_ac_widget(card_html, f"openbtn_{i}"), height=44)
 
             # Hatalı dosyaları sadece onları tekrar dene
             err_indices = [i for i, r in enumerate(results) if "error" in r]
