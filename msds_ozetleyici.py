@@ -2462,10 +2462,27 @@ def main():
             st.warning("⚠️ Hiçbir AI motoru hazır değil. Sol paneldeki **🔁 Otomatik yedekleme** bölümünden "
                        "en az bir motor anahtarı girin (veya Ollama kurun).")
 
-        batch_files = st.file_uploader(
-            "MSDS/SDS PDF dosyalarını seçin (çoklu seçim)",
-            type="pdf", accept_multiple_files=True, key="batch_uploader"
-        )
+        # Yükleyici, silinebilmesi için dinamik anahtar kullanır: sil butonuna
+        # basılınca sayaç artar → Streamlit yükleyiciyi sıfırdan (boş) kurar.
+        if "batch_uploader_nonce" not in st.session_state:
+            st.session_state["batch_uploader_nonce"] = 0
+
+        up_col, sil_col = st.columns([4, 1.15])
+        with up_col:
+            batch_files = st.file_uploader(
+                "MSDS/SDS PDF dosyalarını seçin (çoklu seçim)",
+                type="pdf", accept_multiple_files=True,
+                key=f"batch_uploader_{st.session_state['batch_uploader_nonce']}"
+            )
+        with sil_col:
+            st.markdown("<div style='height:32px'></div>", unsafe_allow_html=True)  # hizalama
+            if st.button("🗑️ Yüklenen\nMSDS'leri sil", use_container_width=True,
+                         help="Yüklenen PDF'leri VE alttaki sonuçlar bölümünü temizler; "
+                              "yeni bir toplu işleme sıfırdan başlayabilirsiniz."):
+                st.session_state["batch_uploader_nonce"] += 1
+                st.session_state.pop("batch_results", None)
+                st.session_state.pop("combined_pdf", None)
+                st.rerun()
 
         if batch_files:
             st.info(f"📦 **{len(batch_files)}** dosya seçildi.")
