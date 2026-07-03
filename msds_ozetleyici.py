@@ -1201,10 +1201,7 @@ def call_openai_compatible(text: str, api_key: str, model: str, base_url: str,
                 raise RuntimeError(f"BAD_REQUEST_400: {err_detail}")
             resp.raise_for_status()
             content = resp.json()["choices"][0]["message"]["content"]
-            content = re.sub(r"```json|```", "", content).strip()
-            return json.loads(content)
-        except json.JSONDecodeError:
-            raise
+            return json_ayikla(content)
         except RuntimeError:
             raise
         except Exception as e:
@@ -1323,10 +1320,7 @@ def call_claude(text: str, api_key: str, model: str = "claude-haiku-4-5-20251001
             for block in data.get("content", []):
                 if block.get("type") == "text":
                     content += block.get("text", "")
-            content = re.sub(r"```json|```", "", content).strip()
-            return json.loads(content)
-        except json.JSONDecodeError:
-            raise
+            return json_ayikla(content)
         except RuntimeError:
             raise
         except Exception as e:
@@ -1377,8 +1371,7 @@ def call_ollama(text: str, model: str, base_url: str) -> dict:
                 continue
             resp.raise_for_status()
             raw = resp.json().get("response", "{}")
-            raw = re.sub(r"```json|```", "", raw).strip()
-            return json.loads(raw)
+            return json_ayikla(raw)
         except requests.exceptions.Timeout:
             last_err = RuntimeError("OLLAMA_TIMEOUT: Yerel model çok yavaş yanıt verdi "
                                     "(8 GB RAM'de büyük belgeler uzun sürebilir).")
@@ -1439,10 +1432,7 @@ def call_gemini(text: str, api_key: str, model: str = "gemini-2.5-flash-lite", m
                 ),
             )
             raw = (resp.text or "{}").strip()
-            raw = re.sub(r"```json|```", "", raw).strip()
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            raise
+            return json_ayikla(raw)
         except Exception as e:
             last_err = e
             msg = str(e)
@@ -1630,11 +1620,72 @@ def _is_minute_limit_error(err: Exception) -> bool:
     return "RATE_LIMIT_MINUTE" in msg or ("429" in msg and not _is_daily_exhausted_error(err))
 
 
+def json_ayikla(content) -> dict:
+    """AI yanıtından JSON'u SAĞLAMLAŞTIRILMIŞ şekilde çıkarır. Modeller bazen bozuk
+    JSON döndürür (sarkan virgül, akıllı tırnak, yarım kesilmiş yanıt...). Sırasıyla:
+    ham hali → yaygın onarımlar → kesik yanıtı dengeleme → hata konumundan geri kırpma
+    denenir. Hepsi başarısız olursa TÜRKÇE bir hata fırlatılır (failover devralır)."""
+    raw = re.sub(r"```(?:json)?", "", str(content or "")).strip()
+    m = re.search(r"\{.*\}", raw, re.S)
+    if m:
+        raw = m.group(0)
+    else:
+        i = raw.find("{")
+        if i >= 0:
+            raw = raw[i:]  # yanıt yarıda kesilmiş olabilir — { ile başlayan kısmı al
+
+    def _dengele(s):
+        # Kesik yanıt: açık kalan tırnağı kapat, eksik parantezleri tamamla
+        if s.count('"') % 2 == 1:
+            s += '"'
+        s += "]" * max(0, s.count("[") - s.count("]"))
+        s += "}" * max(0, s.count("{") - s.count("}"))
+        return s
+
+    onarimli = raw.replace("\u201c", '"').replace("\u201d", '"').replace("\u2019", "'")
+    onarimli = re.sub(r",\s*([}\]])", r"\1", onarimli)                 # sarkan virgül
+    onarimli = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", " ", onarimli)  # kontrol karakterleri
+
+    son_hata = None
+    for aday in (raw, onarimli, _dengele(onarimli)):
+        try:
+            return json.loads(aday)
+        except json.JSONDecodeError as e:
+            son_hata = e
+
+    # Son çare: hatanın olduğu konumdan geriye, son TAMAMLANMIŞ değere kadar kırp
+    try:
+        kes = onarimli[:max(son_hata.pos, 1)]
+        kes = re.sub(r",\s*\"[^\"]*\"?\s*:?\s*[^,}\]]*$", "", kes)  # yarım kalan alanı at
+        kes = re.sub(r",\s*$", "", kes)
+        return json.loads(_dengele(kes))
+    except Exception:
+        pass
+
+    raise RuntimeError(
+        f"JSON_BOZUK: Yapay zekâ geçerli JSON döndürmedi — yanıt bozuk veya yarıda kesilmiş "
+        f"(teknik ayrıntı: {son_hata}). Otomatik yedeklemedeki sıradaki motor denenecek.")
+
+
 def diagnose_error(err_msg: str) -> dict:
     """Bir hata mesajını analiz edip kaynağını belirler.
     Döner: {kaynak, etiket, aciklama, cozum} — kullanıcıya nerede sorun olduğunu net gösterir."""
     m = str(err_msg)
     low = m.lower()
+
+    # ── AI yanıtı bozuk/yarım JSON (İngilizce ham mesajlar da yakalanır) ──
+    if ("json_bozuk" in low or "jsondecode" in low or "expecting" in low
+            or "delimiter" in low or "unterminated string" in low or "invalid control character" in low):
+        return {
+            "kaynak": "🤖 AI Motoru (yanıt)",
+            "etiket": "AI yanıtı bozuk geldi",
+            "aciklama": "Yapay zekâ, özet verisini beklenen biçimde (JSON) döndüremedi — yanıt bozuk "
+                        "veya yarıda kesilmiş. Genelde geçici bir durumdur: model o an yükü kaldıramamış "
+                        "ya da yanıt uzunluk sınırına takılıp kesilmiştir.",
+            "cozum": "Dosyayı '🔄 Hatalıları tekrar dene' ile yeniden işletin — çoğu zaman ikinci denemede "
+                     "düzelir. Sık tekrarlıyorsa başka bir motor seçin (Groq/Gemini) veya anahtarlarını "
+                     "girerek otomatik yedeklemeye bırakın; 📐 Kural Tabanlı mod da anahtar gerektirmeden çalışır.",
+        }
 
     # ── DOSYA kaynaklı (uygulama PDF'i okuyamadı) ──
     if "metin çıkar" in low or "taranmış" in low or "görsel pdf" in low:
