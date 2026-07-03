@@ -916,11 +916,22 @@ def _satir_degeri(blok: str, anahtarlar, n=160):
         m = re.search(rf"(?im)^[^\n:]{{0,34}}?{a}[\wçğıöşüÇĞİÖŞÜ()\-/']{{0,3}}[ \t]+"
                       rf"((?-i:[A-ZÇĞİÖŞÜ0-9(>%<])[^\n]*)", blok)
         if m and m.group(1).strip().lower() not in _ETIKET_ARTIGI:
-            adaylar.append(m.group(1))
+            aday2 = m.group(1).strip()
+            # 'UYGUN SÖNDÜRÜCÜ MADDELER' gibi büyük harfli başlıkların devamını değer sanma
+            if not (re.fullmatch(r"[A-ZÇĞİÖŞÜ /()-]{3,}", aday2) and len(aday2.split()) <= 3):
+                adaylar.append(aday2)
+        # 2b) tablo satırı: değer KÜÇÜK harfle başlıyor ama kısa ve aynı satırda
+        #     ('Fiziksel Durumu sıvı' gibi) — uzun cümleleri dışlamak için sıkı sınırlar
+        m = re.search(rf"(?im)^[^\n:]{{0,30}}?{a}[\wçğıöşüÇĞİÖŞÜ()\-/']{{0,3}}[ \t]+"
+                      rf"((?-i:[a-zçğıöşü])[^\n]{{0,40}})$", blok)
+        if m and not _baslik_mi(m.group(0)):
+            aday2b = m.group(1).strip()
+            if len(aday2b.split()) <= 4 and aday2b.lower() not in _ETIKET_ARTIGI:
+                adaylar.append(aday2b)
         m = re.search(rf"(?im)^([^\n]{{0,60}}?{a}([^\n]{{0,40}}))\n[ \t]*([^\n]{{3,}})", blok)
         if m:
-            if _veri_yokla_bitiyor(m.group(2)):
-                # Anahtar satırı 'Uygun bilgi yok' ile bitiyor → değer bilinçli yok;
+            if _veri_yokla_bitiyor(m.group(2)) or _veri_yokla_bitiyor(m.group(3)):
+                # Anahtar satırı VEYA alttaki satır 'mevcut değil' vb. ile bitiyor →
                 # sentinel ekle ki aday döngüsü bu anahtarı kapatıp SIRADAKİNE geçsin
                 adaylar.append("veri yok")
             elif not _baslik_mi(m.group(3)) and ":" not in m.group(3)[:25]:
@@ -991,8 +1002,8 @@ def analyze_rule_based(text: str) -> dict:
     if not rev:
         rev_m = re.search(r"(?i)(?:revizyon|revision|düzenleme)\D{0,20}(\d{1,2}[./]\d{1,2}[./]\d{2,4})", text[:4000])
         rev = rev_m.group(1) if rev_m else None
-    uretici = _satir_degeri(b1, ["Üretici", "Tedarikçi", "Firma adı", "Şirket", "Company",
-                                 "Supplier", "Manufacturer"])
+    uretici = _satir_degeri(b1, ["Şirket [ÜU]nvan", "Üretici firma", "Üretici", "Tedarikçi(?!sin)",
+                                 "Firma adı", "Şirket adı", "Şirket", "Company", "Supplier", "Manufacturer"])
     acil = _satir_degeri(b1, ["Acil durum telefon", "Acil telefon", "Emergency phone",
                               "Emergency telephone", "UZEM", "Zehir Danışma"], n=60)
 
@@ -1066,6 +1077,14 @@ def analyze_rule_based(text: str) -> dict:
         }
 
     ilk_yardim = _yollar(b4)
+    # Bazı belgeler ilk yardımı yol bazlı (solunum/deri/göz/yutma) değil tek genel
+    # metinle verir — dört alan da boşsa genel açıklamayı hepsine yay ki kart boş kalmasın
+    if b4 and not any(ilk_yardim.values()):
+        genel_iy = (_satir_degeri(b4, ["önlemlerinin açıklaması", "İlk yardım önlemleri",
+                                       "Description of first aid"], 160)
+                    or _blok_ozeti(b4, 160))
+        if genel_iy:
+            ilk_yardim = {k: genel_iy for k in ilk_yardim}
     saglik = _yollar(b11 or b2, n=150)
     kkd = {
         "solunum": _satir_degeri(b8, ["Solunum sisteminin korunması", "Solunum korunması", "Solunum koruma",
