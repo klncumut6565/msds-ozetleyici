@@ -185,8 +185,33 @@ def safe_filename(name: str, fallback: str = "MSDS_Ozet") -> str:
     return s or fallback
 
 
-# PDF adlarına eklenen, ürünü tanımlamayan kısaltmalar (MSDS_Aseton_TR.pdf gibi)
-_AD_KISALTMALARI = re.compile(r"(?i)\b(msds|sds|gbf|tds|sdb|tr|tur|ing|eng|en|de)\b\.?")
+# PDF adlarına eklenen, ürünü tanımlamayan kısaltmalar (MSDS_Aseton_TR.pdf,
+# Aseton_SDS312580.pdf gibi). Bitişik sayı ekleri de kapsanır (SDS312580 → atılır).
+# Not: (?i) Türkçe İ/ı'yı eşlemediği için İ içeren kelimeler karakter sınıfıyla yazılır.
+_AD_KISALTMALARI = re.compile(
+    r"(?i)\b(?:"
+    r"(?:msds|sds|gbf|tds|sdb)\d*"                 # kısaltma + bitişik sayı (SDS312580)
+    r"|t[üu]rk[çc]e"                                # turkce/turkçe/türkçe/türkce
+    r"|[İIiı]ng[İIiı]l[İIiı]zce"                    # ingilizce/İNGİLİZCE
+    r"|tr|tur|ing|eng|en|de"
+    r")\b\.?")
+
+
+def tds_dosyasi_mi(text: str) -> bool:
+    """PDF'in MSDS değil TDS (Teknik Bilgi/Veri Formu) olup olmadığını anlar.
+    Kural: belge başında TDS işaretleri VARSA ve MSDS/GBF işaretleri YOKSA → TDS'dir,
+    analiz edilmeden atlanır. (İçinde 'TDS' kelimesi geçen gerçek bir MSDS yanlışlıkla
+    atlanmasın diye MSDS işaretleri her zaman önceliklidir.)"""
+    bas = (text or "")[:4000]
+    msds_isareti = re.search(
+        r"(?i)güvenl[İIiı]k\s+b[İIiı]lg[İIiı]\s+formu|safety\s+data\s+sheet|material\s+safety"
+        r"|\bmsds\b|\bgbf\b|zararlılık\s+tanımlanması|hazards?\s+identification", bas)
+    if msds_isareti:
+        return False
+    tds_isareti = re.search(
+        r"(?i)\bTDS\b|tekn[İIiı]k\s+(?:b[İIiı]lg[İIiı]|ver[İIiı])\s+formu|technical\s+data\s+sheet"
+        r"|ürün\s+tekn[İIiı]k\s+formu", bas)
+    return bool(tds_isareti)
 
 
 def cikti_adi_olustur(fname: str, urun_adi=None) -> str:
@@ -1673,6 +1698,17 @@ def diagnose_error(err_msg: str) -> dict:
     m = str(err_msg)
     low = m.lower()
 
+    # ── TDS dosyası (MSDS değil) — bilerek atlandı ──
+    if "tds_dosyasi" in low:
+        return {
+            "kaynak": "📄 PDF Dosyası",
+            "etiket": "TDS — MSDS değil, atlandı",
+            "aciklama": "Bu belge bir TDS (Teknik Bilgi/Veri Formu). Güvenlik verisi (H/P ifadeleri, "
+                        "ilk yardım, ADR) içermez; bu yüzden analiz edilmeden atlandı — kota harcanmadı.",
+            "cozum": "Bu ürünün MSDS/GBF (Güvenlik Bilgi Formu) dosyasını tedarikçiden isteyip onu yükleyin. "
+                     "Bu bir hata değil, bilinçli bir atlama.",
+        }
+
     # ── AI yanıtı bozuk/yarım JSON (İngilizce ham mesajlar da yakalanır) ──
     if ("json_bozuk" in low or "jsondecode" in low or "expecting" in low
             or "delimiter" in low or "unterminated string" in low or "invalid control character" in low):
@@ -2378,6 +2414,11 @@ def main():
                         if char_count < 100:
                             st.error("PDF'den metin çıkarılamadı (taranmış/görsel PDF olabilir).")
                             return
+                        if tds_dosyasi_mi(pdf_text):
+                            st.warning("⏭️ Bu belge bir **TDS (Teknik Bilgi Formu)** — MSDS/GBF değil. "
+                                       "Güvenlik verisi içermediği için analiz edilmedi. "
+                                       "Lütfen ürünün MSDS/GBF dosyasını yükleyin.")
+                            return
                         st.success(f"✓ {char_count:,} karakter okundu")
                     except Exception as e:
                         st.error(f"PDF okuma hatası: {e}")
@@ -2640,6 +2681,9 @@ def main():
                         pdf_text = extract_pdf_text(raw_bytes)
                         if len(pdf_text) < 100:
                             record["error"] = "Metin çıkarılamadı (taranmış/görsel PDF olabilir)"
+                        elif tds_dosyasi_mi(pdf_text):
+                            record["error"] = ("TDS_DOSYASI: Bu belge bir MSDS/GBF değil, TDS "
+                                               "(Teknik Bilgi Formu) — analiz edilmeden atlandı.")
                         else:
                             data, used_eng = analyze_with_failover(
                                 pdf_text, live_chain, default_models, keys,
@@ -2774,6 +2818,9 @@ def main():
                             pdf_text = extract_pdf_text(raw)
                             if len(pdf_text) < 100:
                                 rec["error"] = "Metin çıkarılamadı (taranmış/görsel PDF olabilir)"
+                            elif tds_dosyasi_mi(pdf_text):
+                                rec["error"] = ("TDS_DOSYASI: Bu belge bir MSDS/GBF değil, TDS "
+                                                "(Teknik Bilgi Formu) — analiz edilmeden atlandı.")
                             else:
                                 data, used_eng = analyze_with_failover(
                                     pdf_text, live, default_models, rkeys, ollama_url, rexhausted
