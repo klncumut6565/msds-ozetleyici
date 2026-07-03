@@ -107,7 +107,8 @@ def adr_tablodan_tamamla(data: dict) -> dict:
             secim = next((v for v in varyantlar if v.get("kemler")), varyantlar[0])
 
         eslesen = {"kemler_kodu": "kemler", "adr_sinifi": "sinif",
-                   "ambalaj_grubu": "pg", "tunel_kodu": "tunel"}
+                   "ambalaj_grubu": "pg", "tunel_kodu": "tunel",
+                   "ozel_hukumler": "ozel"}
         tamamlanan = []
         for alan, kaynak in eslesen.items():
             if not ok(adr.get(alan)) and secim.get(kaynak):
@@ -182,6 +183,30 @@ def safe_filename(name: str, fallback: str = "MSDS_Ozet") -> str:
     s = re.sub(r"[^\w\s-]", "", s).strip()
     s = re.sub(r"\s+", "_", s)
     return s or fallback
+
+
+# PDF adlarına eklenen, ürünü tanımlamayan kısaltmalar (MSDS_Aseton_TR.pdf gibi)
+_AD_KISALTMALARI = re.compile(r"(?i)\b(msds|sds|gbf|tds|sdb|tr|tur|ing|eng|en|de)\b\.?")
+
+
+def cikti_adi_olustur(fname: str, urun_adi=None) -> str:
+    """Çıktı (yazdır/PDF kaydet) dosya adını kurar: önce PDF adı, sonra belgedeki
+    ürün adı ('PDFAdı - ÜrünAdı'). İkisi aynı isme işaret ediyorsa yalnızca PDF adı
+    kullanılır. PDF adındaki MSDS/SDS/GBF/TR/ING/ENG gibi kısaltmalar isme katılmaz."""
+    pdf = re.sub(r"(?i)\.pdf\s*$", "", str(fname or ""))
+    pdf = pdf.replace("_", " ").replace("-", " ")
+    pdf = _AD_KISALTMALARI.sub(" ", pdf)
+    pdf = re.sub(r"\s+", " ", pdf).strip(" .-–")
+    urun = re.sub(r"\s+", " ", flatten_text(urun_adi or "")).strip()
+
+    def _norm(x):
+        # Karşılaştırma için: Türkçe İ/ı dahil küçük harfe indir, harf/rakam dışını at
+        x = x.replace("İ", "i").replace("I", "ı").lower()
+        return re.sub(r"[^0-9a-zçğıöşü]", "", x)
+
+    if pdf and urun and _norm(pdf) != _norm(urun):
+        return f"{pdf} - {urun}"
+    return pdf or urun or "MSDS_Ozet"
 
 # ═══ ADR sınıf etiketleri (tehlike elmasları) — Bölüm 14 için ═══
 # Öncelikli kaynak: adr_etiket_gorselleri.py (ADR 5.2.2'ye sadık orijinal görseller).
@@ -420,6 +445,19 @@ def generate_html_card(s: dict, company: dict = None, fname: str = "") -> str:
         items = "".join(f'<div style="font-size:9px;color:#333;padding:1.5px 0;">{p}</div>' for p in p_list[:5])
         h_html += f'<div style="font-size:9px;font-weight:500;color:#1565c0;margin-top:7px;margin-bottom:2px;">ÖNLEM (P)</div>{items}'
 
+    # Her iki liste de boşsa bölümü boş bırakma — NEDENİNİ söyle:
+    # ürün mevzuata göre sınıflandırılmamışsa bu olumlu bir bilgidir, "veri yok" değildir.
+    if not h_html:
+        _sinif_metni = f"{s.get('tehlike_sinifi') or ''} {s.get('sinyal_kelimesi') or ''}"
+        if re.search(r"(?i)sınıflandırılmam|sınıflandırılmış\s+değil|zararlı\s+değil|not\s+classified|non[- ]hazardous", _sinif_metni):
+            h_html = ('<div style="padding:6px 8px;background:#e8f5e9;border-left:3px solid #2e7d32;border-radius:2px;">'
+                      '<span style="font-size:9px;color:#1b5e20;line-height:1.5;">✔ Ürün, ilgili mevzuat (SEA/CLP) uyarınca '
+                      'zararlı olarak <b>sınıflandırılmamıştır</b> — bu nedenle H (tehlike) ve P (önlem) ifadesi bulunmamaktadır.</span></div>')
+        else:
+            h_html = ('<div style="padding:6px 8px;background:#f5f5f5;border-left:3px solid #9e9e9e;border-radius:2px;">'
+                      '<span style="font-size:9px;color:#616161;line-height:1.5;">Belgede H (tehlike) ve P (önlem) ifadesi '
+                      'tespit edilemedi. Karar vermeden önce orijinal GBF Bölüm 2\'yi kontrol edin.</span></div>')
+
     # (Sağlık etkileri bloğu kaldırıldı — İlk Yardım kutucukları yeterli bilgiyi veriyor)
 
     # ADR Bölüm 14 — her zaman gösterilir (veri yoksa da bölüm görünür)
@@ -518,8 +556,9 @@ def generate_html_card(s: dict, company: dict = None, fname: str = "") -> str:
     revizyon   = flatten_text(s.get("revizyon_tarihi") or "")
     cas_line   = f"CAS: {cas}" + (f" · {formul}" if ok(formul) else "")
 
-    # PDF kaydederken dosya adı bu <title>'dan gelir → ürün adını dosya-dostu yap
-    base_name = urun if ok(urun) and urun != "—" else (fname.replace(".pdf", "") if fname else "MSDS_Ozet")
+    # PDF kaydederken dosya adı bu <title>'dan gelir → "PDFAdı - ÜrünAdı" kuralı
+    # (aynıysa tek isim; MSDS/SDS/TR/ENG gibi kısaltmalar PDF adından ayıklanır)
+    base_name = cikti_adi_olustur(fname, urun if urun != "—" else None)
     safe_title = safe_filename(base_name)
 
     return f"""<!DOCTYPE html>
@@ -720,6 +759,7 @@ DİĞER BÖLÜMLER — her biri için ilgili kısmı oku ve metinde bilgi varsa 
 - h_ifadeleri / p_ifadeleri: BÖLÜM 2 "Zararlılık tanımlanması" / "Etiket unsurları". Her H/P kodunu kısa
   açıklamasıyla ver (örn. "H334 - Solunması halinde alerjiye yol açabilir"). En önemlilerini al.
 - tehlike_sinifi: BÖLÜM 2'deki sınıflandırma ifadelerini birleştir (örn. "Solnm. Hassas. 1; Cilt Hassas. 1").
+  Ürün zararlı olarak sınıflandırılmamışsa null yazma; "Sınıflandırılmamıştır" yaz (bu, veri eksikliğinden farklı, olumlu bir bilgidir).
 - fiziksel_ozellikler: BÖLÜM 9 "Fiziksel ve Kimyasal Özellikler". gorunum, renk, koku, parlama_noktasi,
   kaynama_noktasi, erime_noktasi, yogunluk (bağıl yoğunluk), ph, cozunurluk, buhar_basinci alanlarını bu
   bölümden doldur. "Uygun bilgi yok / Uygulanamaz" yazanları null bırak, ama gerçek değer varsa MUTLAKA yaz.
@@ -799,8 +839,14 @@ def _bolumlere_ayir(text: str) -> dict:
     return bolumler
 
 
-_VERI_YOK = {"yok", "veri yok", "veri yoktur", "bilgi yok", "mevcut değil", "not available",
-             "not applicable", "n/a", "n.a.", "-", "–", "belirlenmemiş", "uygulanamaz", "none"}
+_VERI_YOK = {"yok", "veri yok", "veri yoktur", "bilgi yok", "bilgi yoktur", "mevcut değil",
+             "uygun bilgi yok", "uygun veri yok", "özel bilgi yok", "ilgili olmayan bilgiler",
+             "veri bulunmamaktadır", "bilinmiyor", "belirtilmemiştir", "not available",
+             "no data available", "not applicable", "n/a", "n.a.", "-", "–", "belirlenmemiş",
+             "uygulanamaz", "none"}
+
+# Etiketin devamı olup değer OLMAYAN tek kelimeler ("Acil durum telefon Numarası" → "Numarası")
+_ETIKET_ARTIGI = {"numarası", "no", "adı", "adi", "bilgileri", "bilgisi", "kimliği", "grubu"}
 
 
 def _temiz(v, n=200):
@@ -814,19 +860,75 @@ def _temiz(v, n=200):
 
 
 def _satir_degeri(blok: str, anahtarlar, n=160):
-    """'Anahtar : değer' biçimindeki satırlardan değeri çeker; değer aynı satırda
-    yoksa bir SONRAKİ satıra bakar (pdfplumber bazen etiketle değeri ayırır)."""
+    """'Anahtar : değer' satırlarından değeri çeker. Denenen desenler:
+    1) Aynı satırda iki nokta/tire ayracıyla        → 'Parlama noktası: -17 °C'
+    2) Aynı satırda AYRAÇSIZ (bazı SDS şablonları)  → 'Ürün adı Silikon şeffaf'
+    3) Değer bir SONRAKİ satırda                    → başlık satırı + alt satırda metin
+    4) Anahtar bir CÜMLENİN içinde                  → 'Yanma ürünlerini teneffüs etmekten kaçının.'
+    Anahtar bulunup değeri 'veri yok' türündeyse alan KESİN boş kabul edilir
+    (zayıf desenlere düşüp yanlış satır toplamamak için)."""
     if not blok:
         return None
+
+    def _veri_yok_mu(ham):
+        return re.sub(r"\s+", " ", str(ham)).strip(" .;:,•*").lower() in _VERI_YOK
+
+    def _veri_yokla_bitiyor(ham):
+        s = re.sub(r"\s+", " ", str(ham)).strip(" .;:,•*").lower()
+        return any(s.endswith(vy) for vy in _VERI_YOK if len(vy) > 3)
+
+    def _baslik_mi(satir):
+        s = satir.strip()
+        return bool(re.match(r"(?:\d{1,2}\.(?:\d{1,2}\.?)?\s|BÖLÜM|BOLUM|KISIM|SECTION)", s, re.I))
+
     for a in anahtarlar:
-        m = re.search(rf"(?im)^[^\n]{{0,60}}?{a}[^:\n]{{0,40}}[:\-]\s*([^\n]+)", blok)
+        # Bu anahtar için adayları desen sırasıyla topla; 'veri yok' görülürse
+        # bu anahtarı kapat ve SIRADAKİ anahtara geç (zayıf desene düşme).
+        adaylar = []
+        m = re.search(rf"(?im)^[^\n]{{0,60}}?{a}[^:\n]{{0,40}}(?::|[ \t][-–][ \t])\s*([^\n]+)", blok)
         if m:
-            v = _temiz(m.group(1), n)
-            if v:
-                return v
-        m = re.search(rf"(?im)^[^\n]{{0,60}}?{a}[^\n]{{0,40}}\n[ \t]*([^\n]{{3,}})", blok)
-        if m and ":" not in m.group(1)[:25]:
-            v = _temiz(m.group(1), n)
+            adaylar.append(m.group(1))
+        m = re.search(rf"(?im)^[^\n:]{{0,34}}?{a}[\wçğıöşüÇĞİÖŞÜ()\-/']{{0,3}}[ \t]+"
+                      rf"((?-i:[A-ZÇĞİÖŞÜ0-9(>%<])[^\n]*)", blok)
+        if m and m.group(1).strip().lower() not in _ETIKET_ARTIGI:
+            adaylar.append(m.group(1))
+        m = re.search(rf"(?im)^([^\n]{{0,60}}?{a}([^\n]{{0,40}}))\n[ \t]*([^\n]{{3,}})", blok)
+        if m:
+            if _veri_yokla_bitiyor(m.group(2)):
+                # Anahtar satırı 'Uygun bilgi yok' ile bitiyor → değer bilinçli yok;
+                # sentinel ekle ki aday döngüsü bu anahtarı kapatıp SIRADAKİNE geçsin
+                adaylar.append("veri yok")
+            elif not _baslik_mi(m.group(3)) and ":" not in m.group(3)[:25]:
+                aday3 = m.group(3).strip()
+                # PDF tablo hücresi sarması: değerin başı anahtar satırının ÜSTÜNE,
+                # devamı ALTINA düşmüş olabilir ('Organik solventte / Çözünürlük / çözünür').
+                # Alt satır küçük harfle başlıyorsa (devam işareti) üstteki satırla birleştir.
+                if re.match(r"[a-zçğıöşü]", aday3):
+                    sinir = blok.rfind("\n", 0, m.start(1))
+                    onceki = blok[blok.rfind("\n", 0, sinir) + 1: sinir].strip() if sinir > 0 else ""
+                    if (onceki and not _baslik_mi(onceki) and ":" not in onceki
+                            and re.match(r"[A-ZÇĞİÖŞÜ0-9]", onceki) and not _veri_yok_mu(onceki)
+                            and len(onceki.split()) <= 6):
+                        aday3 = onceki + " " + aday3
+                # Cümle sonraki satırlara sarkmışsa (küçük harf/parantezle başlayan
+                # devam satırları) birleştir — uzun metin alanları kesilmesin
+                kalan = blok[m.end(3):].split("\n")
+                for devam in kalan[1:4]:
+                    devam = devam.strip()
+                    if (devam and re.match(r"[a-zçğıöşü(]", devam)
+                            and not _baslik_mi(devam) and len(aday3) < n):
+                        aday3 += " " + devam
+                    else:
+                        break
+                adaylar.append(aday3)
+        m = re.search(rf"(?im)^([^\n:]*{a}[^\n:]*[.!])\s*$", blok)
+        if m and not _baslik_mi(m.group(1)) and len(m.group(1).split()) >= 4:
+            adaylar.append(m.group(1))
+
+        for aday in adaylar:
+            if _veri_yok_mu(aday):
+                break  # etiket var ama değer bilinçli 'yok' → sıradaki anahtar
+            v = _temiz(aday, n)
             if v:
                 return v
     return None
@@ -903,11 +1005,18 @@ def analyze_rule_based(text: str) -> dict:
     p_ifadeleri = _kod_ifadeleri(r"\b(P\d{3}(?:\s*\+\s*P\d{3}){0,3})\b[\s:،,\-–]*([^\n]{0,90})",
                                  [b2, text], 5)
     piktolar = sorted(set(re.findall(r"\bGHS0[1-9]\b", text)))
-    tehlike_sinifi = _satir_degeri(b2, ["Sınıflandırma", "Classification"], n=220)
+    tehlike_sinifi = _satir_degeri(b2, ["Sınıflandır", "Classification"], n=220)
+    # Ürünün zararlı olarak sınıflandırılmadığı açıkça yazıyorsa bunu kesin bilgi
+    # olarak işaretle (kart bu sayede 'veri yok' yerine olumlu durumu gösterir)
+    if re.search(r"(?i)sınıflandırılmam[ıi]ş|sınıflandırılm[ıi]ş\s+değildir|zararlı\s+(?:olarak\s+)?sınıflandırılmaz|not\s+classified\s+as\s+hazardous|not\s+a\s+hazardous",
+                 b2 or "") and not h_ifadeleri:
+        tehlike_sinifi = tehlike_sinifi or "Zararlı olarak sınıflandırılmamıştır"
+        if "sınıflandır" not in tehlike_sinifi.lower():
+            tehlike_sinifi += " — Sınıflandırılmamıştır"
 
     # ── Fiziksel özellikler (Bölüm 9) ──
     fiz = {
-        "gorunum": _satir_degeri(b9, ["Görünüm", "Fiziksel hal", "Fiziksel durum", "Appearance", "Physical state", "Form"], 60),
+        "gorunum": _satir_degeri(b9, ["Görünüm", "Fiziksel [Dd]urum", "Fiziksel hal", "Appearance", "Physical state", "Form"], 60),
         "renk": _satir_degeri(b9, ["Renk", "Colour", "Color"], 40),
         "koku": _satir_degeri(b9, [r"Koku(?! eşi)", r"Odou?r(?! threshold)"], 50),
         "parlama_noktasi": _satir_degeri(b9, ["Parlama nokta", "Alevlenme nokta", "Flash point"], 40),
@@ -921,20 +1030,27 @@ def analyze_rule_based(text: str) -> dict:
 
     # ── Yol bazlı alanlar (Bölüm 4 ilk yardım, 11 sağlık etkileri, 8 KKD) ──
     def _yollar(blok, n=180):
+        # Not: Türkçe büyük İ, re.IGNORECASE ile küçük i'ye eşleşmez; bu yüzden
+        # tamamı büyük yazılmış başlıklar (CİLTLE, DERİ...) için açık biçimler eklidir.
         return {
-            "solunum": _satir_degeri(blok, ["Soluma", "Solunum", "Solunması", "Inhalation"], n),
-            "deri": _satir_degeri(blok, ["Deri ile temas", "Cilt ile temas", "Deri temas", "Cilt", "Deri", "Skin"], n),
-            "goz": _satir_degeri(blok, ["Göz ile temas", "Gözle temas", "Göz temas", "Göz", "Eye"], n),
-            "yutma": _satir_degeri(blok, ["Yutma", "Yutulması", "Yutulma", "Ağız", "Ingestion", "Swallow"], n),
+            "solunum": _satir_degeri(blok, ["Soluma", "Solunum", "SOLUNUM", "Inhalation"], n),
+            "deri": _satir_degeri(blok, ["Deri ile temas", "Cilt ile temas", "C[İI]LT?LE", "DER[İI]",
+                                         "Deri temas", "Cilt", "Deri", "Skin"], n),
+            "goz": _satir_degeri(blok, ["Göz ile temas", "Gözle temas", "GÖZLE", "Göz temas", "Göz", "Eye"], n),
+            "yutma": _satir_degeri(blok, ["Yutma", "YUTMA", "Yutulması", "Yutulma", "Ağız", "Ingestion", "Swallow"], n),
         }
 
     ilk_yardim = _yollar(b4)
     saglik = _yollar(b11 or b2, n=150)
     kkd = {
-        "solunum": _satir_degeri(b8, ["Solunum sisteminin korunması", "Solunum korunması", "Solunum koruma", "Respiratory"], 120),
-        "el": _satir_degeri(b8, ["Ellerin korunması", "El korunması", "Eldiven", "Hand protection", "Gloves"], 120),
-        "goz": _satir_degeri(b8, ["Göz.{0,6}korunması", "Gözlerin korunması", "Gözlük", "Eye.{0,6}protection"], 120),
-        "vucut": _satir_degeri(b8, ["Cilt ve vücut", "Vücudun korunması", "Vücut korunması", "Cildin korunması",
+        "solunum": _satir_degeri(b8, ["Solunum sisteminin korunması", "Solunum korunması", "Solunum koruma",
+                                      "Solunumu [Kk]oruma", "Respiratory"], 120),
+        "el": _satir_degeri(b8, ["Ellerin korunması", "El korunması", "Elleri? [Kk]oruma", "Eldiven",
+                                 "Hand protection", "Gloves"], 120),
+        "goz": _satir_degeri(b8, ["Göz.{0,6}korunması", "Gözlerin korunması", "Gözler[İi]? [Kk]oruma",
+                                  "Gözlük", "Eye.{0,6}protection"], 120),
+        "vucut": _satir_degeri(b8, ["Cilt ve vücut", "Vücudun korunması", "Vücut korunması", "Vücudu [Kk]oruma",
+                                    "Cildin korunması", "Cild[İi]? [Kk]oruma", "C[İI]ld[İi] [Kk]oruma",
                                     "Koruyucu giysi", "Skin protection", "Body protection"], 120),
     }
 
@@ -948,7 +1064,8 @@ def analyze_rule_based(text: str) -> dict:
     }
 
     depolama = _satir_degeri(b7, ["Depolama koşul", "Güvenli depolama", "Depolama", "Storage"], 250) or _blok_ozeti(b7, 250)
-    dokulme = _satir_degeri(b6, ["Temizleme yöntem", "Temizlik için", "Toplama", "Methods for cleaning"], 250) or _blok_ozeti(b6, 250)
+    dokulme = _satir_degeri(b6, ["Temizleme yöntem", "temizleme için yöntem", "Temizlik için", "Toplama",
+                                 "Methods for cleaning"], 250) or _blok_ozeti(b6, 250)
     bertaraf = _satir_degeri(b13, ["Atık işleme", "Bertaraf yöntem", "Ürün atık", "Waste treatment", "Disposal"], 250) or _blok_ozeti(b13, 250)
 
     # ── Bölüm 14 (ADR) ── eksikler adr_tablodan_tamamla ile Tablo A'dan dolar
@@ -2254,7 +2371,7 @@ def main():
                 html_card = generate_html_card(result, company, uploaded.name)
                 components.html(html_card, height=1350, scrolling=True)
 
-                dl_name = safe_filename(result.get("urun_adi") or uploaded.name.replace(".pdf", ""))
+                dl_name = safe_filename(cikti_adi_olustur(uploaded.name, result.get("urun_adi")))
 
                 st.divider()
                 c1, c2, c3 = st.columns(3)
@@ -2607,7 +2724,7 @@ def main():
                 with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
                     for r in results:
                         if "html" in r:
-                            nm = safe_filename((r.get("data") or {}).get("urun_adi") or r["filename"].replace(".pdf", ""))
+                            nm = safe_filename(cikti_adi_olustur(r["filename"], (r.get("data") or {}).get("urun_adi")))
                             zf.writestr(f"{nm}.html", r["html"])
                 st.download_button(
                     "📄 Tüm HTML Kartları (ZIP)",
@@ -2621,7 +2738,7 @@ def main():
                 with zipfile.ZipFile(zip_buf2, "w", zipfile.ZIP_DEFLATED) as zf:
                     for r in results:
                         if "data" in r:
-                            nm = safe_filename(r["data"].get("urun_adi") or r["filename"].replace(".pdf", ""))
+                            nm = safe_filename(cikti_adi_olustur(r["filename"], r["data"].get("urun_adi")))
                             zf.writestr(
                                 f"{nm}.json",
                                 json.dumps(r["data"], ensure_ascii=False, indent=2)
