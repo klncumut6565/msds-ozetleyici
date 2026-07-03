@@ -2554,6 +2554,18 @@ def main():
                 results = []
                 total = len(batch_files)
 
+                # ── Aynı isimli dosya ÖNCEKİ turda başarıyla işlendiyse tekrar analiz ETME:
+                # mevcut sonucu aynen taşı (kota/zaman boşa gitmesin). Yalnızca yeni
+                # dosyalar ve önceki turda HATALI kalanlar analiz edilir.
+                onceki_basarili = {r["filename"]: r
+                                   for r in st.session_state.get("batch_results", [])
+                                   if "error" not in r and r.get("html")}
+                atlanacak = [f.name for f in batch_files if f.name in onceki_basarili]
+                if atlanacak:
+                    st.info(f"⏭️ **{len(atlanacak)}** dosya önceki turda zaten başarıyla işlenmiş — "
+                            f"tekrar analiz edilmeyecek, mevcut kartları korunuyor. "
+                            f"Yalnızca yeni/hatalı **{total - len(atlanacak)}** dosya işlenecek.")
+
                 # Failover zinciri ve paylaşımlı durum
                 chain = build_failover_chain(engine)
                 exhausted = set()           # bu oturumda kotası dolan motorlar
@@ -2594,6 +2606,18 @@ def main():
                                         height=44)
 
                 for idx, f in enumerate(batch_files):
+                    # Önceki turdan başarılı sonucu olan dosya: analizi atla, sonucu taşı
+                    if f.name in onceki_basarili:
+                        record = onceki_basarili[f.name]
+                        results.append(record)
+                        with live_list:
+                            st.markdown(
+                                f"⏭️ **{(record.get('data') or {}).get('urun_adi') or f.name}** "
+                                f"<span style='color:#999;font-size:11px;'>· önceki turdan korundu</span>",
+                                unsafe_allow_html=True)
+                        progress.progress((idx + 1) / total)
+                        continue
+
                     active_label = ENGINE_LABELS.get(current_engine["val"], current_engine["val"])
                     status.write(f"İşleniyor: **{f.name}** ({idx + 1}/{total}) · Motor: {active_label}")
                     raw_bytes = f.read()
