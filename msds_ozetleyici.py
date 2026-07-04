@@ -678,10 +678,7 @@ function printAs(){{
   <div style="border-right:1px solid #e0e0e0;">
     {sh("❤","İlk Yardım","#0277bd")}
     <div style="padding:6px 10px;">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;">
-        {fab("👁","Göz",ia.get("goz"))}{fab("🖐","Deri",ia.get("deri"))}
-        {fab("💨","Solunum",ia.get("solunum"))}{fab("💊","Yutma",ia.get("yutma"))}
-      </div>
+      {(f'<div style="font-size:9px;color:#333;line-height:1.5;">{ia.get("genel")}</div>' if ok(ia.get("genel")) and not any(ok(ia.get(k)) for k in ("goz","deri","solunum","yutma")) else f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;">{fab("👁","Göz",ia.get("goz"))}{fab("🖐","Deri",ia.get("deri"))}{fab("💨","Solunum",ia.get("solunum"))}{fab("💊","Yutma",ia.get("yutma"))}</div>')}
     </div>
   </div>
   <div>
@@ -865,9 +862,10 @@ def _bolumlere_ayir(text: str) -> dict:
 
 
 _VERI_YOK = {"yok", "veri yok", "veri yoktur", "bilgi yok", "bilgi yoktur", "mevcut değil",
-             "uygun bilgi yok", "uygun veri yok", "özel bilgi yok", "ilgili olmayan bilgiler",
-             "veri bulunmamaktadır", "bilinmiyor", "belirtilmemiştir", "not available",
-             "no data available", "not applicable", "n/a", "n.a.", "-", "–", "belirlenmemiş",
+             "mevcut degil", "mevcut değildir", "uygun bilgi yok", "uygun veri yok",
+             "özel bilgi yok", "ilgili olmayan bilgiler", "veri bulunmamaktadır",
+             "bilinmiyor", "belirtilmemiş", "belirlenmemiş", "not available",
+             "no data available", "not applicable", "n/a", "n.a.", "-", "–",
              "uygulanamaz", "none"}
 
 # Etiketin devamı olup değer OLMAYAN tek kelimeler ("Acil durum telefon Numarası" → "Numarası")
@@ -912,13 +910,29 @@ def _satir_degeri(blok: str, anahtarlar, n=160):
         adaylar = []
         m = re.search(rf"(?im)^[^\n]{{0,60}}?{a}[^:\n]{{0,40}}(?::|[ \t][-–][ \t])\s*([^\n]+)", blok)
         if m:
-            adaylar.append(m.group(1))
+            aday1 = m.group(1).strip()
+            # Değer cümle bitişiyle kapanmıyorsa (nokta/ünlem yok) ve uzun bir talimat
+            # ise, sonraki satırları da ekle — 'GÖZLERLE TEMAS: ...iyice\naçarak...15 dakika'
+            if len(aday1) > 25 and not re.search(r"[.!]\s*$", aday1):
+                kalan1 = blok[m.end(1):].split("\n")
+                for devam in kalan1[1:5]:
+                    devam = devam.strip()
+                    if (not devam or _baslik_mi(devam) or len(aday1) >= n
+                            or re.match(r"^[A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜ ]{3,}:", devam)
+                            or _veri_yokla_bitiyor(devam)):
+                        break
+                    aday1 += " " + devam
+                    if re.search(r"[.!]\s*$", devam):
+                        break
+            adaylar.append(aday1)
         m = re.search(rf"(?im)^[^\n:]{{0,34}}?{a}[\wçğıöşüÇĞİÖŞÜ()\-/']{{0,3}}[ \t]+"
                       rf"((?-i:[A-ZÇĞİÖŞÜ0-9(>%<])[^\n]*)", blok)
         if m and m.group(1).strip().lower() not in _ETIKET_ARTIGI:
             aday2 = m.group(1).strip()
-            # 'UYGUN SÖNDÜRÜCÜ MADDELER' gibi büyük harfli başlıkların devamını değer sanma
-            if not (re.fullmatch(r"[A-ZÇĞİÖŞÜ /()-]{3,}", aday2) and len(aday2.split()) <= 3):
+            # 'UYGUN SÖNDÜRÜCÜ MADDELER' gibi tümü-büyük başlık satırlarının kendisini
+            # değer sanma — AMA rakam/tire/nokta içeren büyük değerleri (TEXSOFIX P-DX,
+            # UN 1830) koru. Yalnızca yalın büyük-harf öbekleri elenir.
+            if not (re.fullmatch(r"[A-ZÇĞİÖŞÜ]{4,}(?:\s+[A-ZÇĞİÖŞÜ]{2,}){0,3}", aday2)):
                 adaylar.append(aday2)
         # 2b) tablo satırı: değer KÜÇÜK harfle başlıyor ama kısa ve aynı satırda
         #     ('Fiziksel Durumu sıvı' gibi) — uzun cümleleri dışlamak için sıkı sınırlar
@@ -946,16 +960,21 @@ def _satir_degeri(blok: str, anahtarlar, n=160):
                             and re.match(r"[A-ZÇĞİÖŞÜ0-9]", onceki) and not _veri_yok_mu(onceki)
                             and len(onceki.split()) <= 6):
                         aday3 = onceki + " " + aday3
-                # Cümle sonraki satırlara sarkmışsa (küçük harf/parantezle başlayan
-                # devam satırları) birleştir — uzun metin alanları kesilmesin
+                # Cümle sonraki satırlara sarkmışsa birleştir — uzun metin alanları
+                # (ilk yardım talimatları vb.) kesilmesin. Değer bir cümle bitişiyle
+                # (. ! :) kapanana kadar, sonraki satırları da ekle. Yeni bir 'ETİKET:'
+                # veya başlık satırı görülünce dur.
                 kalan = blok[m.end(3):].split("\n")
-                for devam in kalan[1:4]:
-                    devam = devam.strip()
-                    if (devam and re.match(r"[a-zçğıöşü(]", devam)
-                            and not _baslik_mi(devam) and len(aday3) < n):
+                if not re.search(r"[.!]\s*$", aday3):
+                    for devam in kalan[1:5]:
+                        devam = devam.strip()
+                        if (not devam or _baslik_mi(devam) or len(aday3) >= n
+                                or re.match(r"^[A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜ ]{3,}:", devam)  # yeni ETİKET:
+                                or _veri_yokla_bitiyor(devam)):
+                            break
                         aday3 += " " + devam
-                    else:
-                        break
+                        if re.search(r"[.!]\s*$", devam):
+                            break
                 adaylar.append(aday3)
         m = re.search(rf"(?im)^([^\n:]*{a}[^\n:]*[.!])\s*$", blok)
         if m and not _baslik_mi(m.group(1)) and len(m.group(1).split()) >= 4:
@@ -1041,7 +1060,17 @@ def analyze_rule_based(text: str) -> dict:
     p_ifadeleri = _kod_ifadeleri(r"\b(P\d{3}(?:\s*\+\s*P\d{3}){0,3})\b[\s:،,\-–]*([^\n]{0,90})",
                                  [b2, text], 5)
     piktolar = sorted(set(re.findall(r"\bGHS0[1-9]\b", text)))
-    tehlike_sinifi = _satir_degeri(b2, ["Sınıflandır", "Classification"], n=220)
+    # Sınıflandırma: önce asıl cümleyi ara ('Ürün ... sınıflandırılmış değildir'),
+    # 'Sınıflandırma ve zararlılıkların tanıtımı: --' gibi boş etiket satırına düşme
+    tehlike_sinifi = None
+    msc = re.search(r"(?im)^([^\n]*\bürün\b[^\n]*sınıflandırıl[^\n]*)$", b2 or "")
+    if msc and len(msc.group(1).split()) >= 5:
+        tehlike_sinifi = _temiz(msc.group(1), 220)
+    if not tehlike_sinifi:
+        tehlike_sinifi = _satir_degeri(b2, ["Sınıflandırma ve zararlılık", "Sınıflandır", "Classification"], n=220)
+        # 'tanıtımı:' ile başlayan kırık eşleşmeyi ele
+        if tehlike_sinifi and re.match(r"(?i)^ve\s+zararlı|^tanıt", tehlike_sinifi):
+            tehlike_sinifi = None
     # Ürünün zararlı olarak sınıflandırılmadığı açıkça yazıyorsa bunu kesin bilgi
     # olarak işaretle (kart bu sayede 'veri yok' yerine olumlu durumu gösterir)
     if re.search(r"(?i)sınıflandırılmam[ıi]ş|sınıflandırılm[ıi]ş\s+değildir|zararlı\s+(?:olarak\s+)?sınıflandırılmaz|not\s+classified\s+as\s+hazardous|not\s+a\s+hazardous",
@@ -1068,23 +1097,28 @@ def analyze_rule_based(text: str) -> dict:
     def _yollar(blok, n=180):
         # Not: Türkçe büyük İ, re.IGNORECASE ile küçük i'ye eşleşmez; bu yüzden
         # tamamı büyük yazılmış başlıklar (CİLTLE, DERİ...) için açık biçimler eklidir.
+        # Yalnızca AÇIK yol-başlıkları eşlenir; tek başına "Cilt"/"Göz" gibi zayıf
+        # anahtarlar KULLANILMAZ (başka satırlara yanlış yapışmasınlar diye).
         return {
-            "solunum": _satir_degeri(blok, ["Soluma", "Solunum", "SOLUNUM", "Inhalation"], n),
-            "deri": _satir_degeri(blok, ["Deri ile temas", "Cilt ile temas", "C[İI]LT?LE", "DER[İI]",
-                                         "Deri temas", "Cilt", "Deri", "Skin"], n),
-            "goz": _satir_degeri(blok, ["Göz ile temas", "Gözle temas", "GÖZLE", "Göz temas", "Göz", "Eye"], n),
-            "yutma": _satir_degeri(blok, ["Yutma", "YUTMA", "Yutulması", "Yutulma", "Ağız", "Ingestion", "Swallow"], n),
+            "solunum": _satir_degeri(blok, ["Soluma", "SOLUNUM", "Solunum yolu", "Inhalation"], n),
+            "deri": _satir_degeri(blok, [r"C[İI]LT\w*(?:\s+\w+){0,3}\s+TEMAS", r"DER[İI]\w*(?:\s+\w+){0,3}\s+TEMAS",
+                                         "Deri ile temas", "Cilt ile temas", "Deri temas[ıi]", "Skin contact"], n),
+            "goz": _satir_degeri(blok, [r"GÖZ\w*(?:\s+\w+){0,3}\s+TEMAS", "Göz ile temas", "Gözle temas",
+                                        "Göz temas[ıi]", "Eye contact"], n),
+            "yutma": _satir_degeri(blok, ["Yutma", "YUTMA", "Yutulmas[ıi]", "Ağız yoluyla",
+                                          "Ingestion", "Swallow"], n),
         }
 
-    ilk_yardim = _yollar(b4)
+    ilk_yardim = _yollar(b4, n=260)
     # Bazı belgeler ilk yardımı yol bazlı (solunum/deri/göz/yutma) değil tek genel
-    # metinle verir — dört alan da boşsa genel açıklamayı hepsine yay ki kart boş kalmasın
+    # metinle verir — dört alan da boşsa genel açıklamayı 'genel' alanına koy
+    # (dört alana kopyalayıp tekrar oluşturmak yerine tek satır olarak gösterilir).
     if b4 and not any(ilk_yardim.values()):
         genel_iy = (_satir_degeri(b4, ["önlemlerinin açıklaması", "İlk yardım önlemleri",
-                                       "Description of first aid"], 160)
-                    or _blok_ozeti(b4, 160))
+                                       "Description of first aid"], 220)
+                    or _blok_ozeti(b4, 220))
         if genel_iy:
-            ilk_yardim = {k: genel_iy for k in ilk_yardim}
+            ilk_yardim["genel"] = genel_iy
     saglik = _yollar(b11 or b2, n=150)
     kkd = {
         "solunum": _satir_degeri(b8, ["Solunum sisteminin korunması", "Solunum korunması", "Solunum koruma",
@@ -1100,11 +1134,12 @@ def analyze_rule_based(text: str) -> dict:
 
     # ── Yangın (Bölüm 5) ──
     yangin = {
-        "sondurme_araci": _satir_degeri(b5, ["Uygun söndürme", "Uygun söndürücü", "Söndürme araç", "Söndürücü madde",
-                                             "Suitable extinguishing"], 150),
-        "yasakli_sondurme": _satir_degeri(b5, ["Uygun olmayan söndür", "Kullanılmaması gereken", "Unsuitable extinguishing"], 120),
-        "ozel_tehlike": _satir_degeri(b5, ["Özel tehlike", "Yanma ürün", "bozunma ürün", "Specific hazard",
-                                           "hazardous combustion"], 150),
+        "sondurme_araci": _satir_degeri(b5, ["Uygun [Ss]öndür", "UYGUN SÖNDÜR", "Söndürme araç",
+                                             "Söndürücü [Mm]adde", "Suitable extinguishing"], 150),
+        "yasakli_sondurme": _satir_degeri(b5, ["Uygun olmayan [Ss]öndür", "UYGUN OLMAYAN",
+                                              "Kullanılmaması gereken", "Unsuitable extinguishing"], 120),
+        "ozel_tehlike": _satir_degeri(b5, ["Özel tehlike", "Özel zarar", "Yanma ürün", "bozunma ürün",
+                                           "Specific hazard", "hazardous combustion"], 150),
     }
 
     depolama = _satir_degeri(b7, ["Depolama koşul", "Güvenli depolama", "Depolama", "Storage"], 250) or _blok_ozeti(b7, 250)
