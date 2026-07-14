@@ -15,6 +15,7 @@ import time
 import zipfile
 import base64
 from datetime import datetime
+from ai_cache_lib.python.ai_cache import cached_call
 
 # Online AI motoru (Gemini) — kurulu değilse uygulama yine açılır,
 # sadece "Online" seçeneği devre dışı kalır.
@@ -1954,39 +1955,67 @@ def analyze_with_failover(text, chain, models, keys, ollama_url, exhausted, on_s
     - GÜNLÜK kota dolan motor 'exhausted'a eklenir, bir daha denenmez, sıradakine geçilir.
     - DAKİKALIK limit (TPM/RPM) yiyen motor tükenmiş SAYILMAZ; call_* fonksiyonları zaten
       bekleyip tekrar dener. Yine de takılırsa o dosyada sıradakine geçilir ama motor açık kalır.
-    Döner: (data, kullanılan_engine). Hepsi tükenirse son hatayı yükseltir."""
-    last_err = None
-    for eng in chain:
-        if eng in exhausted:
-            continue
-        try:
-            if on_switch:
-                on_switch(eng)
-            data = call_ai(
-                text, eng, models.get(eng, ""),
-                ollama_url=ollama_url,
-                gemini_api_key=keys.get("gemini", ""),
-                groq_api_key=keys.get("groq", ""),
-                openai_api_key=keys.get("openai", ""),
-                claude_api_key=keys.get("claude", ""),
-                openrouter_api_key=keys.get("openrouter", ""),
-            )
-            return data, eng
-        except Exception as e:
-            last_err = e
-            if _is_daily_exhausted_error(e):
-                # Günlük kota doldu → bu motoru oturum boyunca atla
-                exhausted.add(eng)
+    Döner: (data, kullanılan_engine). Hepsi tükenirse son hatayı yükseltir.
+
+    TOKEN TASARRUFU: Aynı belge metni (text) + aynı motor zinciri (chain) + aynı
+    model ayarları (models) daha önce işlendiyse, sonuç .ai_cache/ klasöründen
+    okunur ve HİÇBİR API isteği gönderilmez. API anahtarları (keys) cache
+    anahtarına dahil EDİLMEZ; böylece anahtarını değiştirsen bile aynı belge
+    için cache geçerli kalır.
+    """
+
+    def _gercek_analiz():
+        last_err = None
+        for eng in chain:
+            if eng in exhausted:
                 continue
-            elif _is_minute_limit_error(e):
-                # Dakikalık limit: bu dosyada sıradakini dene ama motoru tüketme (sonraki dosyada tekrar denenebilir)
-                continue
-            else:
-                # Kota dışı hata (bozuk PDF, ağ vb.) → üst katman ele alsın
-                raise
-    if last_err:
-        raise last_err
-    raise RuntimeError("Kullanılabilir AI motoru yok (anahtar girilmemiş olabilir).")
+            try:
+                if on_switch:
+                    on_switch(eng)
+                data = call_ai(
+                    text, eng, models.get(eng, ""),
+                    ollama_url=ollama_url,
+                    gemini_api_key=keys.get("gemini", ""),
+                    groq_api_key=keys.get("groq", ""),
+                    openai_api_key=keys.get("openai", ""),
+                    claude_api_key=keys.get("claude", ""),
+                    openrouter_api_key=keys.get("openrouter", ""),
+                )
+                return {"data": data, "used_eng": eng}
+            except Exception as e:
+                last_err = e
+                if _is_daily_exhausted_error(e):
+                    # Günlük kota doldu → bu motoru oturum boyunca atla
+                    exhausted.add(eng)
+                    continue
+                elif _is_minute_limit_error(e):
+                    # Dakikalık limit: bu dosyada sıradakini dene ama motoru tüketme
+                    continue
+                else:
+                    # Kota dışı hata (bozuk PDF, ağ vb.) → üst katman ele alsın
+                    raise
+        if last_err:
+            raise last_err
+        raise RuntimeError("Kullanılabilir AI motoru yok (anahtar girilmemiş olabilir).")
+
+    # Cache anahtarı: belge metni + hangi motorlar/modeller denendiği.
+    # API anahtarları BİLEREK dahil edilmiyor (anahtar değişse de cache geçerli kalsın).
+    cache_key = {
+        "text": text,
+        "chain": list(chain),
+        "models": {k: models.get(k, "") for k in chain},
+    }
+
+    sonuc, cache_hit = cached_call(
+        key_source=cache_key,
+        fn=_gercek_analiz,
+        namespace="msds_analiz",
+    )
+
+    if cache_hit and on_switch:
+        on_switch(f"{sonuc['used_eng']} (cache'ten - 0 token)")
+
+    return sonuc["data"], sonuc["used_eng"]
 
 
 def build_excel_summary(records: list) -> bytes:
