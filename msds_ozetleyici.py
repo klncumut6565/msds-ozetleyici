@@ -530,10 +530,11 @@ def generate_html_card(s: dict, company: dict = None, fname: str = "") -> str:
     sevkiyat = f'<div style="font-size:9.5px;color:#111;font-weight:500;line-height:1.5;margin-bottom:8px;">{adr["sevkiyat_adi"]}</div>' if ok(adr.get("sevkiyat_adi")) else '<div style="font-size:9px;color:#bbb;margin-bottom:8px;">Belirtilmemiş</div>'
     ozel     = f'<div style="font-size:9px;color:#333;line-height:1.6;">{adr["ozel_hukumler"]}</div>' if ok(adr.get("ozel_hukumler")) else '<span style="font-size:9px;color:#bbb;">Belirtilmemiş</span>'
 
-    # Kemler kodu resmi ADR Tablo A'dan tamamlandıysa kartta şeffafça belirt
+    # NOT: Kemler kodu ADR Tablo A'dan sessizce tamamlanır — kullanıcıya bunu
+    # ayrıca bir uyarı kutusu olarak göstermiyoruz, özet sayfasını gereksiz
+    # yere teknik detayla kalabalıklaştırmasın diye. Alan yine de kartta
+    # (satır 526-527) normal şekilde görünür, sadece kaynağı belirtilmez.
     tablo_notu = ""
-    if ok(adr.get("_tablo_notu")):
-        tablo_notu = f'<div style="margin-bottom:6px;padding:4px 8px;background:#fff8e1;border-radius:2px;border-left:3px solid #e65100;"><span style="font-size:8.5px;color:#6d4c00;line-height:1.4;">ℹ {adr["_tablo_notu"]}</span></div>'
 
     # Bu üründe taşıma verisi yoksa kullanıcıya net bilgi notu
     not_regulated = ""
@@ -733,7 +734,18 @@ def extract_pdf_text(file_bytes: bytes) -> str:
 # ── OLLAMA API ─────────────────────────────────────────────────
 OLLAMA_PROMPT = """Bu bir MSDS/SDS (Malzeme Güvenlik Bilgi Formu) belgesidir.
 Aşağıdaki metni analiz et. SADECE geçerli bir JSON nesnesi döndür — başka hiçbir metin yazma.
-Türkçe yanıt ver. Bilgi yoksa null kullan. Listeler boş dizi olabilir.
+
+⚠️ DİL KURALI (ÇOK ÖNEMLİ): Belge İngilizce, Almanca veya başka bir dilde olsa bile TÜM
+alan değerlerini TAM VE AKICI TÜRKÇE olarak yaz. Kaynak metindeki cümleleri OLDUĞU GİBİ
+KOPYALAMA — gerçek bir çevirmen gibi anlamı koruyarak Türkçe'ye çevir. Örnek:
+"May intensify fire; oxidiser." → "Yangını şiddetlendirebilir; oksitleyicidir."
+"Clear, colorless liquid" → "Berrak, renksiz sıvı."
+"Wear protective gloves" → "Koruyucu eldiven giyin."
+Bu kural özellikle Bölüm 4 (ilk yardım), 5 (yangın), 6 (dökülme), 7 (depolama), 8 (KKD),
+9 (fiziksel özellikler), 11 (sağlık etkileri) ve H/P ifadelerinin açıklama kısımları için
+geçerlidir. Yalnızca CAS no, UN no, kimyasal formül, ADR/GHS kodları gibi evrensel
+tanımlayıcılar ve ürün/kimyasal marka adları kaynak dilinde kalabilir.
+Bilgi yoksa null kullan. Listeler boş dizi olabilir.
 
 GHS PİKTOGRAMLARI için ÇOK ÖNEMLİ: Belgede piktogramlar çoğunlukla RESİM olarak konur ve metinde "GHS05" gibi
 kod yazmaz. Bu yüzden piktogramları, belgedeki SINIFLANDIRMA İFADELERİNDEN ve H-KODLARINDAN türet. Bölüm 2
@@ -1187,6 +1199,165 @@ def analyze_rule_based(text: str) -> dict:
     return data
 
 
+# ═══════════════════════════════════════════════════════════════
+# İNGİLİZCE (veya başka dilde) KAYNAK BELGELER İÇİN OTOMATİK ÇEVİRİ
+# Ana AI çıkarım prompt'u "Türkçe yanıt ver" desese de, model bazen kaynak
+# dildeki cümleleri olduğu gibi kopyalayabilir; kural tabanlı (AI'sız) mod ise
+# zaten düz regex ile çalıştığından çeviri YAPAMAZ. Bu bölüm, sonuç JSON'daki
+# metin alanlarını tespit edip TEK, küçük bir ek istekle Türkçe'ye çevirir.
+# ═══════════════════════════════════════════════════════════════
+
+_INGILIZCE_KALIPLAR = re.compile(
+    r"\b(the|and|with|shall|hazard|may cause|in case of|according to|contains?|"
+    r"storage|disposal|precaution|first aid|inhalation|ingestion|swallowed|"
+    r"avoid|wear|keep away|flammable|corrosive|irritant|harmful|causes?|"
+    r"skin contact|eye contact|shall not|do not|used for|safety)\b", re.I)
+
+# Çeviriye SOKULMAYACAK alanlar: kodlar, numaralar, özel adlar — bunları
+# çevirmeye çalışmak anlam kaymasına yol açar.
+_CEVIRI_HARIC_ALANLAR = {
+    "urun_adi", "cas_numarasi", "formul", "revizyon_tarihi", "uretici",
+    "acil_telefon", "sinyal_kelimesi", "ghs_piktogramlari", "un_numarasi",
+    "kemler_kodu", "adr_sinifi", "alt_tehlike", "ambalaj_grubu",
+    "deniz_kirletici", "tunel_kodu", "etiketler",
+}
+
+
+def _metin_parcalarini_topla(data) -> list:
+    parcalar = []
+
+    def gez(v):
+        if isinstance(v, str):
+            parcalar.append(v)
+        elif isinstance(v, dict):
+            for vv in v.values():
+                gez(vv)
+        elif isinstance(v, list):
+            for vv in v:
+                gez(vv)
+
+    gez(data)
+    return parcalar
+
+
+def _muhtemelen_turkce_degil(data: dict) -> bool:
+    """Çıkarılan alanların çoğunlukla Türkçe OLMADIĞINI kaba bir sezgiyle tespit eder
+    (kural tabanlı mod kaynak metni aynen kopyaladığı için, kaynak İngilizce ise
+    JSON da İngilizce kalır). Kesin bir dil tespiti değildir, ama pratikte yeterlidir."""
+    metin = " ".join(_metin_parcalarini_topla(data))[:4000]
+    if len(metin.strip()) < 30:
+        return False
+    turkce_karakter = len(re.findall(r"[çğışöüÇĞİŞÖÜ]", metin))
+    ingilizce_isaret = len(_INGILIZCE_KALIPLAR.findall(metin))
+    # Belirgin İngilizce kalıpları var VE Türkçe karakter yoğunluğu düşükse → Türkçe değil kabul et
+    return ingilizce_isaret >= 2 and turkce_karakter < (len(metin) / 150)
+
+
+def _cevrilebilir_alanlari_topla(data: dict) -> dict:
+    """data içindeki metin alanlarını {yol: değer} olarak toplar (kod/numara
+    alanları hariç) — sadece bunlar çeviriye gönderilir."""
+    sonuc = {}
+
+    def gez(v, yol):
+        if isinstance(v, dict):
+            for k, vv in v.items():
+                if k in _CEVIRI_HARIC_ALANLAR:
+                    continue
+                gez(vv, f"{yol}.{k}" if yol else k)
+        elif isinstance(v, list):
+            for i, vv in enumerate(v):
+                gez(vv, f"{yol}[{i}]")
+        elif isinstance(v, str) and v.strip():
+            sonuc[yol] = v
+
+    gez(data, "")
+    return sonuc
+
+
+def _yol_ile_deger_ata(kok, yol: str, deger):
+    parcalar = [p for p in re.split(r"\.|\[|\]", yol) if p != ""]
+    obj = kok
+    for i, p in enumerate(parcalar):
+        son = i == len(parcalar) - 1
+        if p.lstrip("-").isdigit():
+            idx = int(p)
+            if not isinstance(obj, list) or idx >= len(obj):
+                return
+            if son:
+                obj[idx] = deger
+            else:
+                obj = obj[idx]
+        else:
+            if not isinstance(obj, dict) or p not in obj:
+                return
+            if son:
+                obj[p] = deger
+            else:
+                obj = obj[p]
+
+
+def ceviri_prompt_olustur(alanlar: dict) -> str:
+    """Küçük, MSDS şemasından bağımsız bir çeviri isteği şablonu. {text} yerine
+    çevrilecek {yol: metin} sözlüğünün JSON'u konur (call_* fonksiyonları
+    prompt_template.format(text=...) ile bunu doldurur)."""
+    return (
+        "Aşağıdaki JSON nesnesindeki TÜM değerleri (value) akıcı, doğru Türkçe'ye çevir.\n"
+        "KURALLAR:\n"
+        "- Anahtarları (key) AYNEN KORU, sadece değerleri çevir.\n"
+        "- Kimyasal/teknik terimleri (örn. madde adları, ADR/GHS kodları) koru, ama açıklama "
+        "cümlelerini TAM olarak Türkçe'ye çevir — kaynak dildeki cümleyi olduğu gibi bırakma.\n"
+        "- H/P kodlarıyla başlayan değerlerde (örn. \"H272 - May intensify fire\") kod kısmını "
+        "koru, açıklamayı çevir (örn. \"H272 - Yangını şiddetlendirebilir\").\n"
+        "- SADECE geçerli bir JSON nesnesi döndür, başka hiçbir metin ekleme.\n\n"
+        "ÇEVRİLECEK JSON:\n{text}"
+    )
+
+
+def sonucu_turkceye_cevir(data: dict, chain: list, models: dict, keys: dict,
+                           ollama_url: str, exhausted: set) -> dict:
+    """Sonuç JSON'u büyük olasılıkla Türkçe değilse (kaynak belge İngilizce vb.),
+    metin alanlarını TEK küçük bir istekle çevirip data içine geri yazar.
+    Bu istek orijinal belgeden çok daha küçük olduğu için (birkaç yüz kelime),
+    büyük belgede tükenen/başarısız olan motorlar bile genellikle kaldırabilir.
+    Hiçbir motor çeviremezse veriler kaynak dilinde kalır — sessizce vazgeçilir,
+    analiz sonucu yine de kullanıcıya sunulur."""
+    try:
+        if not _muhtemelen_turkce_degil(data):
+            return data
+        alanlar = _cevrilebilir_alanlari_topla(data)
+        if not alanlar:
+            return data
+
+        ceviri_sablonu = ceviri_prompt_olustur(alanlar)
+        ceviri_metni = json.dumps(alanlar, ensure_ascii=False)
+
+        for eng in chain:
+            if eng == "kural" or eng in exhausted:
+                continue
+            try:
+                ceviriler = call_ai(
+                    ceviri_metni, eng, models.get(eng, ""),
+                    ollama_url=ollama_url,
+                    gemini_api_key=keys.get("gemini", ""),
+                    groq_api_key=keys.get("groq", ""),
+                    openai_api_key=keys.get("openai", ""),
+                    claude_api_key=keys.get("claude", ""),
+                    openrouter_api_key=keys.get("openrouter", ""),
+                    prompt_template=ceviri_sablonu,
+                    post_process=False,
+                )
+                if isinstance(ceviriler, dict) and ceviriler:
+                    for yol, deger in ceviriler.items():
+                        if isinstance(deger, str) and deger.strip():
+                            _yol_ile_deger_ata(data, yol, deger)
+                    return data
+            except Exception:
+                continue
+    except Exception:
+        pass  # çeviri hiçbir koşulda analizi düşürmemeli
+    return data
+
+
 def _model_chain(engine: str, primary: str) -> list:
     """Bir motor için denenecek model sırasını döndürür: önce kullanıcının seçtiği model (primary),
     sonra o motorun diğer yedek modelleri (tekrarsız)."""
@@ -1199,11 +1370,14 @@ def _model_chain(engine: str, primary: str) -> list:
 
 def call_openai_compatible(text: str, api_key: str, model: str, base_url: str,
                             char_limit: int = 30000, max_retries: int = 4,
-                            extra_headers: dict = None) -> dict:
+                            extra_headers: dict = None, prompt_template: str = None) -> dict:
     """OpenAI-uyumlu sohbet API'ları için ortak çağrı (Groq, OpenAI, OpenRouter, vb.).
     Geçici hatalarda (429/500/503) Retry-After'a göre bekleyip tekrar dener.
     413 → failover. 400 (bazı OpenRouter ücretsiz modelleri json_object desteklemez) →
-    response_format olmadan tekrar dener."""
+    response_format olmadan tekrar dener.
+    prompt_template verilmezse varsayılan MSDS çıkarım şablonu (OLLAMA_PROMPT) kullanılır;
+    çeviri gibi başka görevler için farklı bir şablon geçirilebilir."""
+    sablon = prompt_template or OLLAMA_PROMPT
     url = f"{base_url.rstrip('/')}/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     if extra_headers:
@@ -1217,7 +1391,7 @@ def call_openai_compatible(text: str, api_key: str, model: str, base_url: str,
             "model": model,
             "messages": [
                 {"role": "system", "content": "Sen bir MSDS/SDS belge analiz uzmanısın. SADECE geçerli JSON döndür."},
-                {"role": "user", "content": OLLAMA_PROMPT.format(text=select_relevant_text(text, gemini_limit=limit))},
+                {"role": "user", "content": sablon.format(text=select_relevant_text(text, gemini_limit=limit))},
             ],
             "temperature": 0.1,
         }
@@ -1299,18 +1473,20 @@ def call_openai_compatible(text: str, api_key: str, model: str, base_url: str,
     raise last_err
 
 
-def call_groq(text: str, api_key: str, model: str = "llama-3.3-70b-versatile", max_retries: int = 6) -> dict:
+def call_groq(text: str, api_key: str, model: str = "llama-3.3-70b-versatile", max_retries: int = 6,
+              prompt_template: str = None) -> dict:
     """Groq API (OpenAI-uyumlu, çok hızlı). Metin KIRPILMAZ — tam belge gönderilir.
     Model yedekleme (70B→8B) artık call_ai seviyesinde MODEL_FALLBACKS ile yapılır."""
     if not api_key:
         raise RuntimeError("Groq API anahtarı girilmemiş.")
     return call_openai_compatible(text, api_key, model,
                                   base_url="https://api.groq.com/openai/v1",
-                                  char_limit=999999, max_retries=max_retries)
+                                  char_limit=999999, max_retries=max_retries,
+                                  prompt_template=prompt_template)
 
 
 def call_openrouter(text: str, api_key: str, model: str = "openrouter/free",
-                    max_retries: int = 5) -> dict:
+                    max_retries: int = 5, prompt_template: str = None) -> dict:
     """OpenRouter API (OpenAI-uyumlu). Tek anahtarla onlarca modele erişim; ücretsiz modeller var.
     Varsayılan 'openrouter/free' o an çalışan bir ücretsiz modeli otomatik seçer (model adı eskimez).
     Ücretsiz katman ~20 istek/dakika, ~50-200 istek/gün."""
@@ -1325,6 +1501,7 @@ def call_openrouter(text: str, api_key: str, model: str = "openrouter/free",
         return call_openai_compatible(text, api_key, mdl,
                                       base_url="https://openrouter.ai/api/v1",
                                       char_limit=999999, max_retries=max_retries,
+                                      prompt_template=prompt_template,
                                       extra_headers={
                                           "HTTP-Referer": "https://msds-ozetleyici.streamlit.app",
                                           "X-Title": "MSDS Ozetleyici",
@@ -1338,10 +1515,12 @@ def call_openrouter(text: str, api_key: str, model: str = "openrouter/free",
         raise
 
 
-def call_claude(text: str, api_key: str, model: str = "claude-haiku-4-5-20251001", max_retries: int = 4) -> dict:
+def call_claude(text: str, api_key: str, model: str = "claude-haiku-4-5-20251001", max_retries: int = 4,
+                 prompt_template: str = None) -> dict:
     """Anthropic Claude API (en kaliteli, ücretli). Kendi mesaj formatını kullanır."""
     if not api_key:
         raise RuntimeError("Claude API anahtarı girilmemiş.")
+    sablon = prompt_template or OLLAMA_PROMPT
     url = "https://api.anthropic.com/v1/messages"
     headers = {
         "x-api-key": api_key,
@@ -1354,7 +1533,7 @@ def call_claude(text: str, api_key: str, model: str = "claude-haiku-4-5-20251001
         "temperature": 0.1,
         "system": "Sen bir MSDS/SDS belge analiz uzmanısın. SADECE geçerli JSON döndür, başka metin yazma.",
         "messages": [
-            {"role": "user", "content": OLLAMA_PROMPT.format(text=select_relevant_text(text, gemini_limit=60000))},
+            {"role": "user", "content": sablon.format(text=select_relevant_text(text, gemini_limit=60000))},
         ],
     }
     last_err = None
@@ -1414,11 +1593,12 @@ def call_claude(text: str, api_key: str, model: str = "claude-haiku-4-5-20251001
     raise last_err
 
 
-def call_ollama(text: str, model: str, base_url: str) -> dict:
+def call_ollama(text: str, model: str, base_url: str, prompt_template: str = None) -> dict:
     """Yerel Ollama ile analiz. 8 GB RAM'de RAM taşmasını önlemek için context penceresi (num_ctx)
     KÜÇÜK başlar (4096), 500/yetersizlik olursa kademeli artar. num_predict ile yanıt da sınırlanır
     (özet JSON için yeterli) — böylece bellek kullanımı kontrol altında kalır."""
-    full_prompt = OLLAMA_PROMPT.format(text=text)
+    sablon = prompt_template or OLLAMA_PROMPT
+    full_prompt = sablon.format(text=text)
     # 8 GB RAM dengesi: önce küçük context (daha az RAM), gerekirse büyüt.
     # Büyük context = daha çok RAM = 8 GB'de çökme riski. O yüzden küçükten başla.
     ctx_sizes = [4096, 8192]
@@ -1490,7 +1670,8 @@ def _is_daily_quota_exhausted(msg: str) -> bool:
         or "FREE_TIER_REQUESTS" in u or "GENERATE_CONTENT_FREE_TIER" in u
 
 
-def call_gemini(text: str, api_key: str, model: str = "gemini-2.5-flash-lite", max_retries: int = 4) -> dict:
+def call_gemini(text: str, api_key: str, model: str = "gemini-2.5-flash-lite", max_retries: int = 4,
+                 prompt_template: str = None) -> dict:
     """Google Gemini API ile analiz. Geçici sunucu hataları (429 kota / 503 yoğunluk /
     500 dahili) durumunda Google'ın önerdiği süre kadar bekleyip otomatik tekrar dener.
     Günlük ücretsiz kota bittiyse beklemenin faydası olmadığı için anlaşılır bir hata verir."""
@@ -1499,13 +1680,14 @@ def call_gemini(text: str, api_key: str, model: str = "gemini-2.5-flash-lite", m
             "google-genai kütüphanesi kurulu değil. Komut isteminde şunu çalıştırın:\n"
             "pip install google-genai"
         )
+    sablon = prompt_template or OLLAMA_PROMPT
     client = genai.Client(api_key=api_key)
     last_err = None
     for attempt in range(max_retries):
         try:
             resp = client.models.generate_content(
                 model=model,
-                contents=OLLAMA_PROMPT.format(text=select_relevant_text(text, gemini_limit=60000)),
+                contents=sablon.format(text=select_relevant_text(text, gemini_limit=60000)),
                 config=genai_types.GenerateContentConfig(
                     temperature=0.1,
                     response_mime_type="application/json",
@@ -1619,31 +1801,40 @@ FAILOVER_ORDER = ["groq", "gemini", "openrouter", "openai", "claude", "ollama", 
 
 
 def _call_single_model(text, engine, model, ollama_url,
-                       gemini_api_key, groq_api_key, openai_api_key, claude_api_key, openrouter_api_key):
-    """Tek bir motoru, tek bir modelle çağırır (model zinciri YOK)."""
+                       gemini_api_key, groq_api_key, openai_api_key, claude_api_key, openrouter_api_key,
+                       prompt_template=None):
+    """Tek bir motoru, tek bir modelle çağırır (model zinciri YOK).
+    prompt_template verilmezse standart MSDS çıkarım şablonu kullanılır (kural motoru hariç —
+    o zaten şablon kullanmaz, düz regex ile çalışır ve çeviri göreviyle çağrılamaz)."""
     if engine == "kural":
         return analyze_rule_based(text)
     if engine == "gemini":
-        return call_gemini(text, gemini_api_key, model)
+        return call_gemini(text, gemini_api_key, model, prompt_template=prompt_template)
     elif engine == "groq":
-        return call_groq(text, groq_api_key, model)
+        return call_groq(text, groq_api_key, model, prompt_template=prompt_template)
     elif engine == "openrouter":
-        return call_openrouter(text, openrouter_api_key, model)
+        return call_openrouter(text, openrouter_api_key, model, prompt_template=prompt_template)
     elif engine == "openai":
         return call_openai_compatible(text, openai_api_key, model,
-                                      base_url="https://api.openai.com/v1")
+                                      base_url="https://api.openai.com/v1",
+                                      prompt_template=prompt_template)
     elif engine == "claude":
-        return call_claude(text, claude_api_key, model)
+        return call_claude(text, claude_api_key, model, prompt_template=prompt_template)
     else:
-        return call_ollama(text, model, ollama_url)
+        return call_ollama(text, model, ollama_url, prompt_template=prompt_template)
 
 
 def call_ai(text: str, engine: str, model: str, ollama_url: str = "",
             gemini_api_key: str = "", groq_api_key: str = "", openai_api_key: str = "",
-            claude_api_key: str = "", openrouter_api_key: str = "") -> dict:
+            claude_api_key: str = "", openrouter_api_key: str = "",
+            prompt_template: str = None, post_process: bool = True) -> dict:
     """Seçili AI motoruna göre çağrı. Motorun MODEL ZİNCİRİNİ sırayla dener:
     bir model günlük kota/boyut/model-hatası verirse, aynı motorun sıradaki modeline geçer.
-    Tüm modeller tükenirse son hatayı yükseltir (üst katman başka MOTORA failover eder)."""
+    Tüm modeller tükenirse son hatayı yükseltir (üst katman başka MOTORA failover eder).
+    prompt_template: verilmezse standart MSDS çıkarım şablonu; çeviri gibi farklı görevler
+    için özel bir şablon geçirilebilir (bkz. ceviri_prompt_olustur).
+    post_process: piktogram/ADR-tablo tamamlama gibi SADECE MSDS çıkarımına özgü adımlar;
+    çeviri gibi farklı şekilli sonuç döndüren görevlerde False geçilmeli."""
     models_to_try = _model_chain(engine, model)
     if not models_to_try:
         models_to_try = [model]
@@ -1654,7 +1845,8 @@ def call_ai(text: str, engine: str, model: str, ollama_url: str = "",
         try:
             data = _call_single_model(
                 text, engine, mdl, ollama_url,
-                gemini_api_key, groq_api_key, openai_api_key, claude_api_key, openrouter_api_key
+                gemini_api_key, groq_api_key, openai_api_key, claude_api_key, openrouter_api_key,
+                prompt_template=prompt_template
             )
             break  # başarılı → dur
         except Exception as e:
@@ -1668,6 +1860,9 @@ def call_ai(text: str, engine: str, model: str, ollama_url: str = "",
         if last_err:
             raise last_err
         raise RuntimeError("Model denenemedi.")
+
+    if not post_process:
+        return data
 
     # Güvenlik ağı: AI piktogram döndürmediyse H-kodları/sınıflandırmadan türet
     try:
@@ -1981,6 +2176,10 @@ def analyze_with_failover(text, chain, models, keys, ollama_url, exhausted, on_s
                     claude_api_key=keys.get("claude", ""),
                     openrouter_api_key=keys.get("openrouter", ""),
                 )
+                # Kaynak belge İngilizce (veya başka bir dil) ise ve kullanılan
+                # motor bunu Türkçe'ye çevirmediyse (özellikle 'kural' modu,
+                # veya bazen küçük/hızlı modeller), ek küçük bir istekle çevir.
+                data = sonucu_turkceye_cevir(data, chain, models, keys, ollama_url, exhausted)
                 return {"data": data, "used_eng": eng}
             except Exception as e:
                 last_err = e
