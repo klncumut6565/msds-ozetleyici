@@ -489,6 +489,12 @@ def generate_html_card(s: dict, company: dict = None, fname: str = "") -> str:
     # ADR Bölüm 14 — her zaman gösterilir (veri yoksa da bölüm görünür)
     kemler_top = adr.get("kemler_kodu") if ok(adr.get("kemler_kodu")) else "–"
     kemler_bot = (adr.get("un_numarasi") or "–").replace("UN", "").strip() or "–"
+    # [DÜZELTİLDİ] Turuncu dolgu artık yalnızca GERÇEK veri varsa uygulanır.
+    # Önceden #FF8F00 koşulsuzdu; UN No/Kemler kodu olmayan ürünlerde bile
+    # plaka dolu turuncu görünüyordu (Umut'un tespiti, 20.07.2026).
+    plaka_veri_var = ok(adr.get("kemler_kodu")) or ok(adr.get("un_numarasi"))
+    plaka_bg = "#FF8F00" if plaka_veri_var else "#f5f5f5"
+    plaka_yazi_rengi = "#1a1a1a" if plaka_veri_var else "#bbb"
     # ADR tehlike etiketleri: görsel elmas plakalar. Etiket listesi boşsa
     # sınıf + alt tehlikeden türet. Tanınmayan kodlar metin rozetine düşer.
     etk_kaynak = list(etk) if etk else [x for x in [adr.get("adr_sinifi"), adr.get("alt_tehlike")] if ok(x)]
@@ -548,8 +554,8 @@ def generate_html_card(s: dict, company: dict = None, fname: str = "") -> str:
   <div style="display:grid;grid-template-columns:auto 1fr 1fr 1fr;">
     <div style="padding:8px 14px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;border-right:1px solid #e0e0e0;">
       <div style="width:62px;border:2.5px solid #e65100;border-radius:2px;overflow:hidden;font-family:monospace;text-align:center;box-shadow:1px 2px 4px rgba(0,0,0,.18);">
-        <div style="background:#FF8F00;padding:4px;font-size:16px;font-weight:800;color:#1a1a1a;letter-spacing:1px;border-bottom:2px solid #e65100;">{kemler_top}</div>
-        <div style="background:#FF8F00;padding:4px;font-size:14px;font-weight:800;color:#1a1a1a;">{kemler_bot}</div>
+        <div style="background:{plaka_bg};padding:4px;font-size:16px;font-weight:800;color:{plaka_yazi_rengi};letter-spacing:1px;border-bottom:2px solid #e65100;">{kemler_top}</div>
+        <div style="background:{plaka_bg};padding:4px;font-size:14px;font-weight:800;color:{plaka_yazi_rengi};">{kemler_bot}</div>
       </div>
       <div style="font-size:7.5px;color:#555;text-align:center;line-height:1.4;">Kemler<br>Plakası</div>
       {f'<div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:center;align-items:flex-start;margin-top:2px;">{etk_html}</div><div style="font-size:7.5px;color:#555;text-align:center;line-height:1.4;">Tehlike<br>Etiketleri</div>' if etk_html else ""}
