@@ -494,13 +494,11 @@ def generate_html_card(s: dict, company: dict = None, fname: str = "") -> str:
     # basılmamalı. Bu yüzden metinden 4 haneli bir sayı ayıklanamıyorsa "–".
     _un_digits = re.search(r"\d{4}", str(adr.get("un_numarasi"))) if ok(adr.get("un_numarasi")) else None
     kemler_bot = _un_digits.group(0) if _un_digits else "–"
-    # Turuncu dolgu yalnızca GERÇEK veri varsa uygulanır (Umut'un tespiti,
-    # 20.07.2026): kemler_kodu doluysa VEYA UN numarasından gerçek bir
-    # 4 haneli kod ayıklanabildiyse turuncu; aksi halde ("Uygulanmaz" gibi
-    # metinler dahil) açık gri — plaka gerçekten boş görünür.
-    plaka_veri_var = ok(adr.get("kemler_kodu")) or bool(_un_digits)
-    plaka_bg = "#FF8F00" if plaka_veri_var else "#f5f5f5"
-    plaka_yazi_rengi = "#1a1a1a" if plaka_veri_var else "#bbb"
+    # Plaka her zaman turuncu (#FF8F00) — Umut'un talimatı: gri arka plan
+    # denemesi (veri yoksa gri) geri alındı, kemler plakası koşulsuz turuncu
+    # kalmalı; yalnızca içindeki metin doğru olacak şekilde düzeltildi.
+    plaka_bg = "#FF8F00"
+    plaka_yazi_rengi = "#1a1a1a"
     # ADR tehlike etiketleri: görsel elmas plakalar. Etiket listesi boşsa
     # sınıf + alt tehlikeden türet. Tanınmayan kodlar metin rozetine düşer.
     etk_kaynak = list(etk) if etk else [x for x in [adr.get("adr_sinifi"), adr.get("alt_tehlike")] if ok(x)]
