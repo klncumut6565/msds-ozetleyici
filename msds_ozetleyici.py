@@ -488,11 +488,17 @@ def generate_html_card(s: dict, company: dict = None, fname: str = "") -> str:
 
     # ADR Bölüm 14 — her zaman gösterilir (veri yoksa da bölüm görünür)
     kemler_top = adr.get("kemler_kodu") if ok(adr.get("kemler_kodu")) else "–"
-    kemler_bot = (adr.get("un_numarasi") or "–").replace("UN", "").strip() or "–"
-    # [DÜZELTİLDİ] Turuncu dolgu artık yalnızca GERÇEK veri varsa uygulanır.
-    # Önceden #FF8F00 koşulsuzdu; UN No/Kemler kodu olmayan ürünlerde bile
-    # plaka dolu turuncu görünüyordu (Umut'un tespiti, 20.07.2026).
-    plaka_veri_var = ok(adr.get("kemler_kodu")) or ok(adr.get("un_numarasi"))
+    # Turuncu plakanın alt yarısı SADECE 4 haneli UN numarasını gösterir.
+    # "un_numarasi" alanı bazen "Uygulanmaz" gibi bir metin olabilir (ürün
+    # ADR kapsamında değilse) — bu durumda plaka boş/"–" kalmalı, kelime
+    # basılmamalı. Bu yüzden metinden 4 haneli bir sayı ayıklanamıyorsa "–".
+    _un_digits = re.search(r"\d{4}", str(adr.get("un_numarasi"))) if ok(adr.get("un_numarasi")) else None
+    kemler_bot = _un_digits.group(0) if _un_digits else "–"
+    # Turuncu dolgu yalnızca GERÇEK veri varsa uygulanır (Umut'un tespiti,
+    # 20.07.2026): kemler_kodu doluysa VEYA UN numarasından gerçek bir
+    # 4 haneli kod ayıklanabildiyse turuncu; aksi halde ("Uygulanmaz" gibi
+    # metinler dahil) açık gri — plaka gerçekten boş görünür.
+    plaka_veri_var = ok(adr.get("kemler_kodu")) or bool(_un_digits)
     plaka_bg = "#FF8F00" if plaka_veri_var else "#f5f5f5"
     plaka_yazi_rengi = "#1a1a1a" if plaka_veri_var else "#bbb"
     # ADR tehlike etiketleri: görsel elmas plakalar. Etiket listesi boşsa
