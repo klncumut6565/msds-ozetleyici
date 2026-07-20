@@ -757,6 +757,17 @@ geçerlidir. Yalnızca CAS no, UN no, kimyasal formül, ADR/GHS kodları gibi ev
 tanımlayıcılar ve ürün/kimyasal marka adları kaynak dilinde kalabilir.
 Bilgi yoksa null kullan. Listeler boş dizi olabilir.
 
+BÖLÜM 1 (Madde/Karışım ve Şirket/Kuruluş Tanımlaması) — ÜÇ AYRI ALANI KARIŞTIRMA:
+- urun_adi: SADECE ürünün ticari/ürün adı (örn. "Aseton", "XYZ-500 Temizleyici").
+  Firma adını, adresi veya başka hiçbir şeyi EKLEME — sadece ürün adının kendisi.
+- uretici: SADECE üretici/tedarikçi FİRMA ADI (örn. "ABC Kimya A.Ş.").
+  Adres, şehir, telefon, departman, web sitesi gibi bilgileri BU ALANA YAZMA — bunlar
+  ayrı gösterilmez, sadece firma adını karman çorman ederler. Yalnızca isim.
+- acil_telefon: SADECE telefon numarası (ülke kodu olabilir, örn. "+90 212 XXX XX XX").
+  "Acil durum telefonu:", açıklama cümlesi, adres gibi metinleri EKLEME — yalnızca numara.
+Bu üç alan Bölüm 1'de birbirine yakın satırlarda olabilir; her birini KENDİ değeriyle
+doldur, birbirinin içine taşırma (örn. uretici alanına adres/telefon sızdırma).
+
 GHS PİKTOGRAMLARI için ÇOK ÖNEMLİ: Belgede piktogramlar çoğunlukla RESİM olarak konur ve metinde "GHS05" gibi
 kod yazmaz. Bu yüzden piktogramları, belgedeki SINIFLANDIRMA İFADELERİNDEN ve H-KODLARINDAN türet. Bölüm 2
 (Zararlılık) ve Bölüm 3'teki sınıflandırmalara bak. Aşağıdaki eşleme tablosunu kullan:
@@ -905,6 +916,27 @@ def _temiz(v, n=200):
     return (s[: n - 1] + "…") if len(s) > n else s
 
 
+_BOLUM1_SONRAKI_ALAN = re.compile(
+    r"(?i)\s+(?:adres[i]?|address|tel(?:efon)?|fax|faks|e[- ]?post[ae]|email|"
+    r"acil\s*durum|emergency|departman|birim|website|web\s*sit)\b\s*[:.]?"
+)
+
+
+def _bolum1_alan_kes(deger):
+    """uretici gibi 'sadece isim' beklenen alanlarda, PDF tablo satırı
+    düzleşmesi yüzünden değerin içine sızmış olabilecek bir SONRAKİ Bölüm 1
+    alanını (Adres/Tel/E-posta/Acil vb.) tespit edip DEĞERİ ORADA KESER.
+    Örn. 'ABC Kimya A.Ş. Adres: ... Tel: ...' -> 'ABC Kimya A.Ş.'
+    Böyle bir sızıntı izi yoksa değeri OLDUĞU GİBİ döndürür (kısaltmaz)."""
+    if not deger:
+        return deger
+    m = _BOLUM1_SONRAKI_ALAN.search(deger)
+    if not m:
+        return deger
+    kesilmis = deger[:m.start()].strip(" ,.;:-–")
+    return kesilmis or deger  # kesilince tamamen boş kalıyorsa orijinali koru
+
+
 def _satir_degeri(blok: str, anahtarlar, n=160):
     """'Anahtar : değer' satırlarından değeri çeker. Denenen desenler:
     1) Aynı satırda iki nokta/tire ayracıyla        → 'Parlama noktası: -17 °C'
@@ -1046,6 +1078,7 @@ def analyze_rule_based(text: str) -> dict:
         rev = rev_m.group(1) if rev_m else None
     uretici = _satir_degeri(b1, ["Şirket [ÜU]nvan", "Üretici firma", "Üretici", "Tedarikçi(?!sin)",
                                  "Firma adı", "Şirket adı", "Şirket", "Company", "Supplier", "Manufacturer"])
+    uretici = _bolum1_alan_kes(uretici)
     acil = _satir_degeri(b1, ["Acil durum telefon", "Acil telefon", "Emergency phone",
                               "Emergency telephone", "UZEM", "Zehir Danışma"], n=60)
 
