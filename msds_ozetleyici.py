@@ -2615,6 +2615,28 @@ def main():
         co_color = st.color_picker("Tema rengi", "#1a237e")
 
         st.divider()
+        st.subheader("🗄️ Önbellek (Token Tasarrufu)")
+        try:
+            from ai_cache_lib.python.ai_cache import cache_stats, clear_cache
+            _istat = cache_stats(namespace="msds_analiz")
+            st.caption(
+                f"{_istat['adet']} belge önbellekte ({_istat['boyut_kb']} KB). "
+                "Aynı belge tekrar yüklendiğinde API isteği atlanır."
+            )
+            st.caption(
+                "⚠️ Bir belgenin analiz sonucu YANLIŞ görünüyorsa (örn. bir alan "
+                "hep boş/eksik geliyor), o belge daha önce hatalı bir sonuçla "
+                "önbelleğe yazılmış olabilir. Aşağıdan temizleyip yeniden yükleyin."
+            )
+            if st.button("🗑️ Önbelleği Temizle", use_container_width=True,
+                        disabled=_istat["adet"] == 0):
+                clear_cache(namespace="msds_analiz")
+                st.success("Önbellek temizlendi. Belgeleri tekrar yüklediğinizde yeniden analiz edilecek.")
+                st.rerun()
+        except Exception:
+            pass  # ai_cache_lib kurulu değilse bu bölüm sessizce atlanır
+
+        st.divider()
         st.caption("⚗️ MSDS Özetleyici v1.4\nGroq + Gemini + OpenAI + Claude + Ollama + Kural Tabanlı · Otomatik yedekleme")
 
     company = {"name": co_name, "dept": co_dept, "color": co_color, "logo": None}
