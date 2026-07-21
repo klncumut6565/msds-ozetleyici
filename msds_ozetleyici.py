@@ -856,12 +856,15 @@ def select_relevant_text(text: str, gemini_limit: int = 60000) -> str:
 # Her motor için MODEL YEDEK ZİNCİRİ: bir model kotası dolar/hata verirse,
 # aynı motorun sıradaki modeli denenir. İlk eleman birincil (kullanıcının seçtiği) modeldir.
 MODEL_FALLBACKS = {
-    "groq": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
+    # Groq: llama-3.3-70b ve llama-3.1-8b 17 Haziran 2026'da kullanımdan
+    # kaldırıldı; Groq'un resmi önerdiği halefler:
+    "groq": ["openai/gpt-oss-120b", "openai/gpt-oss-20b"],
     "gemini": ["gemini-3.1-flash-lite", "gemini-3.5-flash"],
     "openrouter": ["openrouter/free", "deepseek/deepseek-r1:free",
                    "meta-llama/llama-3.3-70b-instruct:free"],
     "openai": ["gpt-4o-mini", "gpt-4o"],
-    "claude": ["claude-haiku-4-5-20251001", "claude-sonnet-4-6"],
+    # Anthropic: Sonnet 4.6 → Sonnet 5 (mevcut nesil). Haiku 4.5 en ekonomik.
+    "claude": ["claude-haiku-4-5-20251001", "claude-sonnet-5"],
     "ollama": [],  # yerelde tek model
 }
 
@@ -1565,7 +1568,7 @@ def call_openai_compatible(text: str, api_key: str, model: str, base_url: str,
             resp = requests.post(url, headers=headers, json=_build_payload(cur_limit), timeout=120)
             # 413: belge bu motora sığmıyor → KIRPMA YOK, daha büyük motora failover et
             if resp.status_code == 413:
-                raise RuntimeError("PAYLOAD_TOO_LARGE: Belge bu motor için çok büyük — "
+                raise RuntimeError("BELGE_COK_BUYUK: Belge bu motor için çok büyük — "
                                    "daha yüksek kapasiteli motora geçiliyor (kırpma yapılmaz).")
             if resp.status_code == 429:
                 body = resp.text
@@ -1574,7 +1577,7 @@ def call_openai_compatible(text: str, api_key: str, model: str, base_url: str,
                 # GÜNLÜK kota mı (RPD/per day)? → beklemek işe yaramaz, failover'a geç
                 if (_is_daily_quota_exhausted(body) or "rpd" in low
                         or "per day" in low or "requests per day" in low):
-                    raise RuntimeError("DAILY_QUOTA_EXHAUSTED: " + body[:300])
+                    raise RuntimeError("GUNLUK_KOTA_DOLDU: " + body[:300])
                 # DAKİKALIK token/istek limiti (TPM/RPM)? → kısa bekle ve TEKRAR DENE (hata sayma!)
                 wait = 0.0
                 if retry_after:
@@ -1596,10 +1599,10 @@ def call_openai_compatible(text: str, api_key: str, model: str, base_url: str,
                     time.sleep(wait)
                     continue
                 # Denemeler bitti ama bu DAKİKALIK bir limit → failover yerine tekrar denenebilir işaretle
-                raise RuntimeError("RATE_LIMIT_MINUTE: " + body[:200])
+                raise RuntimeError("DAKIKALIK_LIMIT: " + body[:200])
             # 404: model adı geçersiz/kullanımdan kalkmış (özellikle OpenRouter ücretsiz modelleri)
             if resp.status_code == 404:
-                raise RuntimeError(f"MODEL_NOT_FOUND: '{model}' modeli bulunamadı. Model adı geçersiz "
+                raise RuntimeError(f"MODEL_BULUNAMADI: '{model}' modeli bulunamadı. Model adı geçersiz "
                                    "veya artık ücretsiz değil. 'openrouter/free' seçin veya "
                                    "openrouter.ai/models'tan güncel bir model adı alın.")
             # 400: bazı modeller response_format json_object desteklemez → kapat ve tekrar dene
@@ -1612,7 +1615,7 @@ def call_openai_compatible(text: str, api_key: str, model: str, base_url: str,
                     err_detail = resp.json().get("error", {}).get("message", "") or resp.text[:200]
                 except Exception:
                     err_detail = resp.text[:200]
-                raise RuntimeError(f"BAD_REQUEST_400: {err_detail}")
+                raise RuntimeError(f"GECERSIZ_ISTEK_400: {err_detail}")
             resp.raise_for_status()
             content = resp.json()["choices"][0]["message"]["content"]
             return json_ayikla(content)
@@ -1623,7 +1626,7 @@ def call_openai_compatible(text: str, api_key: str, model: str, base_url: str,
             msg = str(e)
             # 413 requests.HTTPError olarak gelirse → KIRPMA YOK, failover tetikle
             if "413" in msg:
-                raise RuntimeError("PAYLOAD_TOO_LARGE: Belge bu motor için çok büyük — "
+                raise RuntimeError("BELGE_COK_BUYUK: Belge bu motor için çok büyük — "
                                    "daha yüksek kapasiteli motora geçiliyor (kırpma yapılmaz).")
             transient = any(c in msg for c in ["500", "502", "503", "504", "timeout", "Timeout"])
             if transient and attempt < max_retries - 1:
@@ -1633,7 +1636,7 @@ def call_openai_compatible(text: str, api_key: str, model: str, base_url: str,
     raise last_err
 
 
-def call_groq(text: str, api_key: str, model: str = "llama-3.3-70b-versatile", max_retries: int = 6,
+def call_groq(text: str, api_key: str, model: str = "openai/gpt-oss-120b", max_retries: int = 6,
               prompt_template: str = None) -> dict:
     """Groq API (OpenAI-uyumlu, çok hızlı). Metin KIRPILMAZ — tam belge gönderilir.
     Model yedekleme (70B→8B) artık call_ai seviyesinde MODEL_FALLBACKS ile yapılır."""
@@ -1653,7 +1656,8 @@ def call_openrouter(text: str, api_key: str, model: str = "openrouter/free",
     if not api_key:
         raise RuntimeError("OpenRouter API anahtarı girilmemiş.")
     # Güvenlik ağı: model boş veya bilinen eski/geçersiz adlardan biriyse en güvenilir seçeneğe düş.
-    _stale = ("llama-4-maverick", "gemini-2.0-flash-exp", "deepseek-chat-v3.1", "llama-3.3-70b:free")
+    _stale = ("llama-4-maverick", "gemini-2.0-flash-exp", "deepseek-chat-v3.1", "llama-3.3-70b:free",
+              "llama-3.1-8b-instant", "llama-3.3-70b-versatile")  # Groq 17 Haziran 2026 kullanımdan kaldırdı
     if not model or any(s in model for s in _stale):
         model = "openrouter/free"
 
@@ -1670,7 +1674,7 @@ def call_openrouter(text: str, api_key: str, model: str = "openrouter/free",
         return _try(model)
     except RuntimeError as e:
         # Seçilen model bulunamadıysa (404) ve henüz openrouter/free denenmediyse → ona düş
-        if "MODEL_NOT_FOUND" in str(e) and model != "openrouter/free":
+        if ("MODEL_BULUNAMADI" in str(e) or "MODEL_NOT_FOUND" in str(e)) and model != "openrouter/free":
             return _try("openrouter/free")
         raise
 
@@ -1714,7 +1718,7 @@ def call_claude(text: str, api_key: str, model: str = "claude-haiku-4-5-20251001
                 if attempt < max_retries - 1:
                     time.sleep(wait)
                     continue
-                raise RuntimeError("RATE_LIMIT_MINUTE: " + body[:200])
+                raise RuntimeError("DAKIKALIK_LIMIT: " + body[:200])
             # 4xx hatalarında Anthropic'in gerçek hata açıklamasını çıkar (sadece "400" değil)
             if 400 <= resp.status_code < 500:
                 try:
@@ -1726,12 +1730,12 @@ def call_claude(text: str, api_key: str, model: str = "claude-haiku-4-5-20251001
                     err_type = ""
                 # Anahtar/yetki sorunları
                 if resp.status_code in (401, 403):
-                    raise RuntimeError(f"API_KEY_INVALID: Claude anahtarı geçersiz/yetkisiz. ({err_detail})")
+                    raise RuntimeError(f"API_ANAHTARI_GECERSIZ: Claude anahtarı geçersiz/yetkisiz. ({err_detail})")
                 # Belge çok büyük
                 if resp.status_code == 413 or "too large" in err_detail.lower() or "maximum" in err_detail.lower():
-                    raise RuntimeError("PAYLOAD_TOO_LARGE: " + err_detail)
+                    raise RuntimeError("BELGE_COK_BUYUK: " + err_detail)
                 # Diğer 400'ler: gerçek sebebi göster
-                raise RuntimeError(f"CLAUDE_400 [{err_type}]: {err_detail}")
+                raise RuntimeError(f"CLAUDE_HATA_400 [{err_type}]: {err_detail}")
             resp.raise_for_status()
             data = resp.json()
             # Claude yanıtı: content[0].text
@@ -1787,13 +1791,13 @@ def call_ollama(text: str, model: str, base_url: str, prompt_template: str = Non
                     detail = resp.json().get("error", "")
                 except Exception:
                     detail = resp.text[:200]
-                last_err = RuntimeError(f"OLLAMA_500: Yerel model isteği işleyemedi. {detail}")
+                last_err = RuntimeError(f"OLLAMA_HATA_500: Yerel model isteği işleyemedi. {detail}")
                 continue
             resp.raise_for_status()
             raw = resp.json().get("response", "{}")
             return json_ayikla(raw)
         except requests.exceptions.Timeout:
-            last_err = RuntimeError("OLLAMA_TIMEOUT: Yerel model çok yavaş yanıt verdi "
+            last_err = RuntimeError("OLLAMA_ZAMAN_ASIMI: Yerel model çok yavaş yanıt verdi "
                                     "(8 GB RAM'de büyük belgeler uzun sürebilir).")
             continue
         except json.JSONDecodeError:
@@ -1807,7 +1811,7 @@ def call_ollama(text: str, model: str, base_url: str, prompt_template: str = Non
             raise
     if last_err:
         raise last_err
-    raise RuntimeError("OLLAMA_500: Yerel model yanıt veremedi.")
+    raise RuntimeError("OLLAMA_HATA_500: Yerel model yanıt veremedi.")
 
 
 def _parse_retry_delay(msg: str) -> float:
@@ -2057,17 +2061,26 @@ def call_ai(text: str, engine: str, model: str, ollama_url: str = "",
 
 def _is_daily_exhausted_error(err: Exception) -> bool:
     """Bu motoru atlamamız gereken durumlar: GÜNLÜK kota bitişi, belge sığmıyor (413),
-    veya model bulunamadı (404). Hepsinde aynı motoru tekrar denemek anlamsız → failover."""
+    veya model bulunamadı (404). Hepsinde aynı motoru tekrar denemek anlamsız → failover.
+    Hem yeni Türkçe hata kodlarını (GUNLUK_KOTA_DOLDU, BELGE_COK_BUYUK, MODEL_BULUNAMADI,
+    GECERSIZ_ISTEK_400) hem eski İngilizce kodları (backward compat) yakalar."""
     msg = str(err).upper()
-    return any(k in msg for k in ["DAILY_QUOTA_EXHAUSTED", "RESOURCE_EXHAUSTED", "PAYLOAD_TOO_LARGE",
-                                  "MODEL_NOT_FOUND", "BAD_REQUEST_400",
-                                  "GÜNLÜK ÜCRETSIZ LIMIT", "RPD", "PER DAY", "REQUESTS PER DAY"])
+    return any(k in msg for k in [
+        # Yeni Türkçe hata kodları
+        "GUNLUK_KOTA_DOLDU", "BELGE_COK_BUYUK", "MODEL_BULUNAMADI", "GECERSIZ_ISTEK_400",
+        # Eski İngilizce hata kodları (geriye uyumluluk)
+        "DAILY_QUOTA_EXHAUSTED", "PAYLOAD_TOO_LARGE", "MODEL_NOT_FOUND", "BAD_REQUEST_400",
+        # Üçüncü parti servis kodları (Google/OpenAI/vb. ham mesajlarında geçer)
+        "RESOURCE_EXHAUSTED", "GÜNLÜK ÜCRETSIZ LIMIT", "RPD", "PER DAY", "REQUESTS PER DAY",
+    ])
 
 
 def _is_minute_limit_error(err: Exception) -> bool:
     """Dakikalık limit (TPM/RPM) mi? Beklenip tekrar denenebilir, motor tükenmiş sayılmaz."""
     msg = str(err).upper()
-    return "RATE_LIMIT_MINUTE" in msg or ("429" in msg and not _is_daily_exhausted_error(err))
+    # Yeni Türkçe kod + eski İngilizce kod
+    return ("DAKIKALIK_LIMIT" in msg or "RATE_LIMIT_MINUTE" in msg
+            or ("429" in msg and not _is_daily_exhausted_error(err)))
 
 
 def json_ayikla(content) -> dict:
@@ -2160,7 +2173,9 @@ def diagnose_error(err_msg: str) -> dict:
         }
 
     # ── Yerel Ollama hataları ──
-    if "ollama_500" in low or "ollama_timeout" in low or ("500" in m and "11434" in m) or "11434" in m:
+    if ("ollama_hata_500" in low or "ollama_zaman_asimi" in low
+            or "ollama_500" in low or "ollama_timeout" in low
+            or ("500" in m and "11434" in m) or "11434" in m):
         return {
             "kaynak": "🖥️ Yerel AI (Ollama)",
             "etiket": "Yerel model çöktü",
@@ -2172,7 +2187,7 @@ def diagnose_error(err_msg: str) -> dict:
         }
 
     # ── MODEL bulunamadı (404) — özellikle OpenRouter ücretsiz modelleri ──
-    if "model_not_found" in low or "bad_request_400" in low:
+    if "model_bulunamadi" in low or "model_not_found" in low or "gecersiz_istek_400" in low or "bad_request_400" in low:
         return {
             "kaynak": "🤖 AI Motoru (model)",
             "etiket": "Model bulunamadı/geçersiz",
@@ -2184,7 +2199,7 @@ def diagnose_error(err_msg: str) -> dict:
         }
 
     # ── MOTOR kaynaklı: istek çok büyük (413/payload) — günlük kotadan ÖNCE ──
-    if "payload_too_large" in low or (("too large" in low or "413" in m) and "max_tokens" not in low):
+    if "belge_cok_buyuk" in low or "payload_too_large" in low or (("too large" in low or "413" in m) and "max_tokens" not in low):
         return {
             "kaynak": "🤖 AI Motoru (boyut)",
             "etiket": "Belge çok büyük",
@@ -2205,13 +2220,13 @@ def diagnose_error(err_msg: str) -> dict:
         }
 
     # ── MOTOR kaynaklı: dakikalık limit ──
-    if "rate_limit_minute" in low or "tpm" in low or "rpm" in low or "rate limit" in low or "429" in m:
+    if "dakikalik_limit" in low or "rate_limit_minute" in low or "tpm" in low or "rpm" in low or "rate limit" in low or "429" in m:
         return {
             "kaynak": "🤖 AI Motoru (hız)",
             "etiket": "Dakikalık limit",
             "aciklama": "AI motoru kısa sürede çok istek aldı (dakikalık token/istek sınırı). "
-                        "Özellikle Groq 8B modelinde uzun MSDS'lerde sık görülür.",
-            "cozum": "Otomatik tekrar deneme devrede. Sürerse: Groq'ta 70B modeli seçin (daha yüksek "
+                        "Özellikle Groq'un küçük modelinde uzun MSDS'lerde sık görülür.",
+            "cozum": "Otomatik tekrar deneme devrede. Sürerse: Groq'ta gpt-oss-120b modeli seçin (daha yüksek "
                      "limit) veya ikinci bir motor anahtarı girin. Bu motorun hız sınırı — uygulama hatası değil.",
         }
 
@@ -2631,16 +2646,18 @@ def main():
         elif engine == "groq":
             model = st.selectbox(
                 "Model",
-                ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
-                help="70B (önerilen): uzun MSDS belgelerinde daha başarılı, daha yüksek dakikalık kapasite. "
-                     "8B: daha hızlı ve günde daha çok istek (~14.400) ama uzun belgelerde sorun çıkarabilir."
+                ["openai/gpt-oss-120b", "openai/gpt-oss-20b"],
+                help="gpt-oss-120b (önerilen): Groq'un llama-3.3-70b halefi, uzun MSDS'lerde daha başarılı. "
+                     "gpt-oss-20b: llama-3.1-8b halefi, daha hızlı ve yüksek günlük limit."
             )
             st.markdown('🔑 **Ücretsiz Groq anahtarı al** → [console.groq.com](https://console.groq.com/keys)')
             st.caption("⚡ Groq anahtarını aşağıdaki **🔁 Otomatik yedekleme** bölümüne girin (kayıtlı kalır).")
             with st.expander("ℹ️ Neden Groq?"):
                 st.markdown(
-                    "Groq ücretsiz katmanda **günde ~14.400 istek** verir (8B modelde) ve çok hızlıdır — "
+                    "Groq ücretsiz katmanda **günlük binlerce istek** verir ve çok hızlıdır — "
                     "toplu işlem için en uygun seçenek. Kredi kartı gerekmez. "
+                    "Not: `llama-3.3-70b-versatile` ve `llama-3.1-8b-instant` modelleri 17 Haziran 2026'da "
+                    "kullanımdan kaldırıldı; artık `gpt-oss-120b` ve `gpt-oss-20b` kullanılıyor. "
                     "Anahtar: [console.groq.com/keys](https://console.groq.com/keys)"
                 )
 
@@ -2673,8 +2690,8 @@ def main():
             st.caption("⚠️ OpenAI ücretlidir (ücretsiz katman yok). Düşük maliyet için gpt-4o-mini önerilir.")
 
         elif engine == "claude":
-            model = st.selectbox("Model", ["claude-haiku-4-5-20251001", "claude-sonnet-4-6"],
-                                 help="Haiku: hızlı ve ucuz, bu iş için yeterli. Sonnet: daha kaliteli, pahalı.")
+            model = st.selectbox("Model", ["claude-haiku-4-5-20251001", "claude-sonnet-5"],
+                                 help="Haiku 4.5: hızlı ve ucuz, bu iş için yeterli. Sonnet 5: daha kaliteli, pahalı.")
             st.markdown('🔑 **Claude (Anthropic) anahtarı** → [console.anthropic.com](https://console.anthropic.com/settings/keys)')
             st.caption("🧠 Claude anahtarını aşağıdaki **🔁 Otomatik yedekleme** bölümüne girin (kayıtlı kalır).")
             st.warning(
@@ -2840,7 +2857,7 @@ def main():
 
     # Her motor için varsayılan model (failover sırasında o motora geçildiğinde kullanılır)
     default_models = {
-        "groq": "llama-3.3-70b-versatile",
+        "groq": "openai/gpt-oss-120b",
         "gemini": "gemini-3.1-flash-lite",
         "openrouter": "openrouter/free",
         "openai": "gpt-4o-mini",
