@@ -1109,6 +1109,62 @@ def _blok_ozeti(blok: str, n=260):
     return _temiz(" ".join(satirlar), n)
 
 
+# ── CAS numarası arama ──
+# Bazı MSDS'lerde CAS numarası Bölüm 1/3'te değil, PDF'in başlık kısmının
+# SAĞ ÜST KÖŞESINDE (logo yanında, ürün adının hemen üstünde) çıplak yazılı
+# oluyor. Eski `re.search(r"\d+-\d+-\d", b3 or b1 or text)` deseni b3 dolu
+# ama içinde CAS yoksa b1'e/bas'a düşmüyordu (Python `or` kısa devresi) →
+# çoğu MSDS'te CAS null geliyordu. Yeni bulucu 3 katmanlı:
+#   1) Etiketli arama önce (CAS-No, CAS-Nr, Registry vs.) — en güvenilir
+#   2) Etiketsiz arama sırayla bas → b1 → b3
+#   3) Check-digit doğrulaması (telefon/fatura/revizyon nolarını eler)
+_CAS_ETIKETLI = re.compile(
+    r"(?ix)"
+    r"CAS"
+    r"(?:[\s\-]*(?:no|nr|numarası|number|registry))?"
+    r"\s*[:.\-]?\s*"
+    r"(\d{2,7}\-\d{2}\-\d)\b"
+)
+_CAS_CIPLAK = re.compile(r"\b(\d{2,7}-\d{2}-\d)\b")
+
+
+def _cas_check_digit(cas: str) -> bool:
+    """CAS Registry check-digit doğrulaması. Son rakam, önceki tüm rakamların
+    (sağdan sola sıralı) `i * d` toplamının mod 10'una eşit olmalı. Bu, tire
+    ile ayrılmış rastgele numaraları (telefon, fatura, revizyon) eler."""
+    try:
+        parts = cas.split("-")
+        if len(parts) != 3:
+            return False
+        rakamlar = parts[0] + parts[1]
+        toplam = sum((i + 1) * int(d) for i, d in enumerate(reversed(rakamlar)))
+        return toplam % 10 == int(parts[2])
+    except Exception:
+        return False
+
+
+def _cas_bul(*kaynaklar) -> str:
+    """Verilen metin parçalarında CAS numarası arar. Kaynaklar ÖNCELIK
+    sırasında verilmelidir (örn. bas, b1, b3, text). Önce her kaynakta
+    etiketli, sonra her kaynakta etiketsiz arama yapılır — check-digit
+    doğrulaması ile geçersiz eşleşmeler elenir."""
+    # 1) Etiketli arama — kaynakları sırayla dene
+    for src in kaynaklar:
+        if not src:
+            continue
+        for m in _CAS_ETIKETLI.finditer(src):
+            if _cas_check_digit(m.group(1)):
+                return m.group(1)
+    # 2) Etiketsiz arama — kaynakları sırayla dene, check-digit doğrula
+    for src in kaynaklar:
+        if not src:
+            continue
+        for m in _CAS_CIPLAK.finditer(src):
+            if _cas_check_digit(m.group(1)):
+                return m.group(1)
+    return None
+
+
 def analyze_rule_based(text: str) -> dict:
     """AI kullanmadan, tamamen desen eşleştirmeyle MSDS özeti üretir.
     AI motorlarıyla aynı JSON şemasını döndürür; call_ai içindeki güvenlik
@@ -1127,7 +1183,9 @@ def analyze_rule_based(text: str) -> dict:
     # gibi sonraki alanları temizle.
     urun = _urun_adi_kes(urun)
     kimyasal = _satir_degeri(b1 + b3, ["Kimyasal ad", "Chemical name", "Madde ad", "IUPAC"])
-    cas_m = re.search(r"\b(\d{2,7}-\d{2}-\d)\b", b3 or b1 or text)
+    # CAS numarası: MSDS başlığının sağ üst köşesindeki (bas), Bölüm 1 ve
+    # Bölüm 3'teki tüm konumları etiketli/etiketsiz + check-digit doğrulamayla ara.
+    cas = _cas_bul(bas, b1, b3, text[:8000])
     formul = _satir_degeri(b1 + b3 + b9, ["Kimyasal formül", "Molekül formül", "Formül",
                                           "Molecular formula", "Formula"], n=40)
     rev = _satir_degeri(b1 or bas, ["Revizyon tarih", "Düzenleme tarih", "Yeniden düzenleme",
@@ -1278,7 +1336,7 @@ def analyze_rule_based(text: str) -> dict:
 
     data = {
         "urun_adi": urun, "kimyasal_adi": kimyasal,
-        "cas_numarasi": cas_m.group(1) if cas_m else None,
+        "cas_numarasi": cas,
         "formul": formul, "revizyon_tarihi": rev, "uretici": uretici, "acil_telefon": acil,
         "sinyal_kelimesi": sinyal, "ghs_piktogramlari": piktolar,
         "tehlike_sinifi": tehlike_sinifi,
@@ -1978,6 +2036,21 @@ def call_ai(text: str, engine: str, model: str, ollama_url: str = "",
 
     # Güvenlik ağı 2: Kemler kodu vb. eksikse resmi ADR Tablo A'dan tamamla
     data = adr_tablodan_tamamla(data)
+
+    # Güvenlik ağı 3: AI cas_numarasi vermezse rule-based bulucuyla tamamla.
+    # Bazı MSDS'lerde CAS başlığın sağ üst köşesinde çıplak yazılıyor ve AI
+    # bunu Bölüm 1 dışında sayıp atlıyor. _cas_bul aynı stratejiyle bas → b1
+    # → b3 → tam metin sıralı arar ve check-digit doğrular.
+    try:
+        if not data.get("cas_numarasi"):
+            b = _bolumlere_ayir(text)
+            b1, b3 = b.get(1, ""), b.get(3, "")
+            bas = text[:3000]
+            cas_yedek = _cas_bul(bas, b1, b3, text[:8000])
+            if cas_yedek:
+                data["cas_numarasi"] = cas_yedek
+    except Exception:
+        pass
 
     return data
 
