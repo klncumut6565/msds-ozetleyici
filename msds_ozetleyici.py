@@ -15,7 +15,14 @@ import time
 import zipfile
 import base64
 from datetime import datetime
-from ai_cache_lib.python.ai_cache import cached_call
+# ai_cache_lib DEVRE DIŞI — aktif ettiğinde hatalar üretiyor. Import'u
+# güvenli hale aldık: modül olsa da olmasa da çalışır. Yeniden aktifleştirmek
+# için: (1) aşağıdaki try'ı kaldır, (2) analyze_with_fallback içinde
+# cached_call sarmalayıcısını geri getir (aşağıda yorum satırında hazır).
+try:
+    from ai_cache_lib.python.ai_cache import cached_call  # noqa: F401
+except Exception:
+    cached_call = None
 
 # Online AI motoru (Gemini) — kurulu değilse uygulama yine açılır,
 # sadece "Online" seçeneği devre dışı kalır.
@@ -2387,23 +2394,25 @@ def analyze_with_failover(text, chain, models, keys, ollama_url, exhausted, on_s
             raise last_err
         raise RuntimeError("Kullanılabilir AI motoru yok (anahtar girilmemiş olabilir).")
 
-    # Cache anahtarı: belge metni + hangi motorlar/modeller denendiği.
-    # API anahtarları BİLEREK dahil edilmiyor (anahtar değişse de cache geçerli kalsın).
-    cache_key = {
-        "text": text,
-        "chain": list(chain),
-        "models": {k: models.get(k, "") for k in chain},
-    }
-
-    sonuc, cache_hit = cached_call(
-        key_source=cache_key,
-        fn=_gercek_analiz,
-        namespace="msds_analiz",
-    )
-
-    if cache_hit and on_switch:
-        on_switch(f"{sonuc['used_eng']} (cache'ten - 0 token)")
-
+    # ─── ai_cache_lib DEVRE DIŞI ───
+    # cached_call sarmalayıcısı hatalar ürettiği için kaldırıldı; analiz
+    # doğrudan çalıştırılıyor. Yeniden aktifleştirmek için aşağıdaki bloğu
+    # yerine geri koy:
+    #
+    #   cache_key = {
+    #       "text": text,
+    #       "chain": list(chain),
+    #       "models": {k: models.get(k, "") for k in chain},
+    #   }
+    #   sonuc, cache_hit = cached_call(
+    #       key_source=cache_key,
+    #       fn=_gercek_analiz,
+    #       namespace="msds_analiz",
+    #   )
+    #   if cache_hit and on_switch:
+    #       on_switch(f"{sonuc['used_eng']} (cache'ten - 0 token)")
+    #   return sonuc["data"], sonuc["used_eng"]
+    sonuc = _gercek_analiz()
     return sonuc["data"], sonuc["used_eng"]
 
 
@@ -2797,28 +2806,12 @@ def main():
         co_color = st.color_picker("Tema rengi", "#1a237e")
 
         st.divider()
-        st.subheader("🗄️ Önbellek (Token Tasarrufu)")
-        try:
-            from ai_cache_lib.python.ai_cache import cache_stats, clear_cache
-            _istat = cache_stats(namespace="msds_analiz")
-            st.caption(
-                f"{_istat['adet']} belge önbellekte ({_istat['boyut_kb']} KB). "
-                "Aynı belge tekrar yüklendiğinde API isteği atlanır."
-            )
-            st.caption(
-                "⚠️ Bir belgenin analiz sonucu YANLIŞ görünüyorsa (örn. bir alan "
-                "hep boş/eksik geliyor), o belge daha önce hatalı bir sonuçla "
-                "önbelleğe yazılmış olabilir. Aşağıdan temizleyip yeniden yükleyin."
-            )
-            if st.button("🗑️ Önbelleği Temizle", use_container_width=True,
-                        disabled=_istat["adet"] == 0):
-                clear_cache(namespace="msds_analiz")
-                st.success("Önbellek temizlendi. Belgeleri tekrar yüklediğinizde yeniden analiz edilecek.")
-                st.rerun()
-        except Exception:
-            pass  # ai_cache_lib kurulu değilse bu bölüm sessizce atlanır
+        # ai_cache_lib DEVRE DIŞI — UI'daki "🗄️ Önbellek (Token Tasarrufu)"
+        # bölümü kaldırıldı çünkü aktif olduğunda hatalar üretiyordu. Yeniden
+        # aktifleştirmek için: ana script başındaki import guard'ı kaldır +
+        # analyze_with_fallback içindeki cached_call sarmalayıcısını geri getir,
+        # ve buraya cache_stats/clear_cache UI'ını geri koy.
 
-        st.divider()
         st.caption("⚗️ MSDS Özetleyici v1.4\nGroq + Gemini + OpenAI + Claude + Ollama + Kural Tabanlı · Otomatik yedekleme")
 
     company = {"name": co_name, "dept": co_dept, "color": co_color, "logo": None}
