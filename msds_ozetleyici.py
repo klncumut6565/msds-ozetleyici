@@ -857,7 +857,7 @@ def select_relevant_text(text: str, gemini_limit: int = 60000) -> str:
 # aynı motorun sıradaki modeli denenir. İlk eleman birincil (kullanıcının seçtiği) modeldir.
 MODEL_FALLBACKS = {
     "groq": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
-    "gemini": ["gemini-2.5-flash-lite", "gemini-2.5-flash"],
+    "gemini": ["gemini-3.1-flash-lite", "gemini-3.5-flash"],
     "openrouter": ["openrouter/free", "deepseek/deepseek-r1:free",
                    "meta-llama/llama-3.3-70b-instruct:free"],
     "openai": ["gpt-4o-mini", "gpt-4o"],
@@ -1830,7 +1830,7 @@ def _is_daily_quota_exhausted(msg: str) -> bool:
         or "FREE_TIER_REQUESTS" in u or "GENERATE_CONTENT_FREE_TIER" in u
 
 
-def call_gemini(text: str, api_key: str, model: str = "gemini-2.5-flash-lite", max_retries: int = 4,
+def call_gemini(text: str, api_key: str, model: str = "gemini-3.1-flash-lite", max_retries: int = 4,
                  prompt_template: str = None) -> dict:
     """Google Gemini API ile analiz. Geçici sunucu hataları (429 kota / 503 yoğunluk /
     500 dahili) durumunda Google'ın önerdiği süre kadar bekleyip otomatik tekrar dener.
@@ -1863,7 +1863,7 @@ def call_gemini(text: str, api_key: str, model: str = "gemini-2.5-flash-lite", m
                 raise RuntimeError(
                     "Google Gemini GÜNLÜK ücretsiz limit doldu (bu model için günde sınırlı istek). "
                     "Çözümler: (1) Birkaç saat sonra tekrar deneyin — limit Pasifik saatiyle gece yarısı sıfırlanır. "
-                    "(2) Soldaki menüden modeli 'gemini-2.5-flash-lite' seçin (daha yüksek günlük limit). "
+                    "(2) Soldaki menüden modeli 'gemini-3.1-flash-lite' seçin (daha yüksek günlük limit). "
                     "(3) Çok sayıda dosyanız varsa yerel 'Ollama' motorunu kullanın (limitsiz)."
                 )
             # Geçici hatalar (dakikalık limit / sunucu yoğunluğu) → bekle ve tekrar dene
@@ -2702,8 +2702,8 @@ def main():
             if not GEMINI_SDK_OK:
                 st.error("✗ google-genai kurulu değil")
                 st.code("pip install google-genai")
-            model = st.selectbox("Model", ["gemini-2.5-flash-lite", "gemini-2.5-flash"],
-                                 help="Flash-Lite: daha yüksek günlük limit. Flash: daha kaliteli ama düşük limit.")
+            model = st.selectbox("Model", ["gemini-3.1-flash-lite", "gemini-3.5-flash"],
+                                 help="Flash-Lite: daha yüksek günlük limit, MSDS özetleme için yeterli. Flash: daha kaliteli ama düşük limit.")
             st.markdown('🔑 **Ücretsiz Gemini anahtarı** → [aistudio.google.com/apikey](https://aistudio.google.com/apikey)')
             st.caption("☁️ Gemini anahtarını aşağıdaki **🔁 Otomatik yedekleme** bölümüne girin (kayıtlı kalır).")
             with st.expander("ℹ️ Gemini ücretsiz limit — ÖNEMLİ"):
@@ -2841,7 +2841,7 @@ def main():
     # Her motor için varsayılan model (failover sırasında o motora geçildiğinde kullanılır)
     default_models = {
         "groq": "llama-3.3-70b-versatile",
-        "gemini": "gemini-2.5-flash-lite",
+        "gemini": "gemini-3.1-flash-lite",
         "openrouter": "openrouter/free",
         "openai": "gpt-4o-mini",
         "claude": "claude-haiku-4-5-20251001",
