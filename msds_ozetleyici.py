@@ -164,6 +164,13 @@ def normalize_summary(s: dict) -> dict:
                 "acil_telefon", "sinyal_kelimesi"]:
         if key in s and not isinstance(s[key], str):
             s[key] = flatten_text(s[key])
+    # Ürün adına, PDF tablo satırının düzleşmesi yüzünden CAS No / revizyon
+    # tarihi gibi komşu alanlar karışabiliyor. Bu temizlik hem kural tabanlı
+    # hem de AI çıktısı için ortak noktada uygulanır (AI da zaman zaman
+    # satırın tamamını ürün adı sanabiliyor).
+    if isinstance(s.get("urun_adi"), str):
+        s["urun_adi"] = _urun_adi_kes(s["urun_adi"])
+
     # İç içe nesnelerdeki metin alanları
     for grp in ["fiziksel_ozellikler", "saglik_tehlikeleri", "ilk_yardim", "yangin", "kkd"]:
         sub = s.get(grp)
@@ -937,6 +944,55 @@ def _bolum1_alan_kes(deger):
     return kesilmis or deger  # kesilince tamamen boş kalıyorsa orijinali koru
 
 
+# Ürün adı satırına PDF tablo düzleşmesiyle sızabilen SONRAKİ alan başlıkları.
+# Örn. tek satıra inen bir tablo satırı:
+#   "Ürün adı : ASETON CAS No : 67-64-1 Revizyon tarihi : 12.03.2024"
+# Bu desen "CAS No", "Revizyon tarihi" gibi bir sonraki alanın başladığı yeri bulur.
+_URUN_SONRAKI_ALAN = re.compile(
+    r"(?i)\s+(?:"
+    r"cas(?:[\s\-]*(?:no|numarası|number))?|"
+    r"ec(?:[\s\-]*(?:no|numarası|number))|einecs|elincs|"
+    r"reach(?:[\s\-]*(?:kayıt|registration))?(?:[\s\-]*no)?|"
+    r"index(?:[\s\-]*no)?|"
+    r"revizyon(?:\s*(?:tarihi|no|numarası))?|revize|"
+    r"düzenleme\s*tarihi|hazırlama\s*tarihi|yayın\s*tarihi|"
+    r"revision(?:\s*(?:date|number|no))?|print\s*date|version|sürüm|versiyon|"
+    r"ürün\s*(?:kodu|no|numarası)|product\s*(?:code|number)|madde\s*no|"
+    r"molekül\s*(?:formülü|ağırlığı)|kimyasal\s*formül|molecular\s*(?:formula|weight)|"
+    r"sds\s*no|msds\s*no|belge\s*no|doküman\s*no|"
+    r"tedarikçi|üretici|firma|şirket|supplier|manufacturer|company|"
+    r"kullanım\s*alan|maddenin\s*kullanım|identified\s*use|relevant\s*identified"
+    r")\b\s*[:.\-–]?"
+)
+
+
+def _urun_adi_kes(deger):
+    """Ürün adı gibi 'tek bir isim' beklenen alanda, PDF tablo satırının
+    düzleşmesi yüzünden aynı satıra karışmış bir SONRAKİ alanı (CAS No,
+    Revizyon tarihi, EC No vb.) tespit edip DEĞERİ ORADA KESER.
+
+    Örn. 'ASETON CAS No : 67-64-1 Revizyon tarihi : 12.03.2024' -> 'ASETON'
+
+    Böyle bir sızıntı izi yoksa değer OLDUĞU GİBİ döner (kısaltılmaz), çünkü
+    ürün adlarının kendisi de uzun olabilir ('XYZ-500 Endüstriyel Temizleyici').
+    """
+    if not deger:
+        return deger
+
+    kesilmis = deger
+    m = _URUN_SONRAKI_ALAN.search(kesilmis)
+    if m:
+        kesilmis = kesilmis[: m.start()]
+
+    # Ayraç kalmadan doğrudan yapışmış CAS/tarih kalıntısı olabilir:
+    #   'ASETON 67-64-1'  ya da  'ASETON 12.03.2024'
+    kesilmis = re.sub(r"\s+\d{2,7}-\d{2}-\d\s*$", "", kesilmis)
+    kesilmis = re.sub(r"\s+\d{1,2}[./]\d{1,2}[./]\d{2,4}\s*$", "", kesilmis)
+
+    kesilmis = kesilmis.strip(" ,.;:-–|/")
+    return kesilmis or deger  # tamamen boşaldıysa orijinali koru
+
+
 def _satir_degeri(blok: str, anahtarlar, n=160):
     """'Anahtar : değer' satırlarından değeri çeker. Denenen desenler:
     1) Aynı satırda iki nokta/tire ayracıyla        → 'Parlama noktası: -17 °C'
@@ -1067,6 +1123,9 @@ def analyze_rule_based(text: str) -> dict:
     # ── Kimlik (Bölüm 1) ──
     urun = _satir_degeri(b1 or bas, ["Ürün ad", "Ticari ad", "Ürün tanımlayıcı", "Madde adı",
                                      "Ürün ismi", "Product name", "Trade name", "Product identifier"])
+    # Tablo satırı düzleşmesiyle ürün adına karışmış CAS No / revizyon tarihi
+    # gibi sonraki alanları temizle.
+    urun = _urun_adi_kes(urun)
     kimyasal = _satir_degeri(b1 + b3, ["Kimyasal ad", "Chemical name", "Madde ad", "IUPAC"])
     cas_m = re.search(r"\b(\d{2,7}-\d{2}-\d)\b", b3 or b1 or text)
     formul = _satir_degeri(b1 + b3 + b9, ["Kimyasal formül", "Molekül formül", "Formül",
