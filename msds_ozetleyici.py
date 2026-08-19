@@ -2890,14 +2890,17 @@ def main():
         st.caption("⚗️ MSDS Özetleyici v1.5\nGroq + Nvidia NIM + Gemini + OpenAI + Claude + Ollama + Kural Tabanlı · Otomatik yedekleme")
 
     # ─── ANA SAYFA ÜST ALANI (kompakt) ───
-    # Başlık sayfanın SOL kenarında dikey (yukarıdan aşağıya) durur; böylece
-    # üstte hiç yatay yer kaplamaz ve içerik en tepeden başlar.
+    # Başlık, içerik alanının SOL kenarında dikey durur. position:absolute +
+    # .block-container position:relative kullanılıyor: viewport'a değil içerik
+    # alanına göre konumlandığı için sidebar ile ÇAKIŞMAZ ve akıştan çıktığı
+    # için dikey yer kaplamaz.
     st.markdown("""
     <style>
     .block-container {
+        position: relative !important;
         padding-top: 1rem !important;
         padding-bottom: 1rem !important;
-        padding-left: 3.6rem !important;
+        padding-left: 3.4rem !important;
     }
     .block-container div[data-testid="stVerticalBlock"] {
         gap: 0.35rem !important;
@@ -2905,41 +2908,37 @@ def main():
     hr {
         margin: 0.35rem 0 !important;
     }
-    /* Sol kenarda dikey başlık şeridi */
+    /* İçerik alanının sol kenarında dikey başlık şeridi */
     .msds-vtitle {
-        position: fixed;
-        top: 4.2rem;
-        left: 0.35rem;
-        z-index: 10;
+        position: absolute;
+        top: 1rem;
+        left: 0.2rem;
+        height: calc(100% - 2rem);
         writing-mode: vertical-rl;
         text-orientation: mixed;
         transform: rotate(180deg);
         display: flex;
-        align-items: center;
+        align-items: flex-end;
         gap: 0.7rem;
         pointer-events: none;
         user-select: none;
     }
     .msds-vtitle .t {
-        font-size: 1.35rem;
+        font-size: 1.3rem;
         font-weight: 700;
         letter-spacing: 0.02em;
         line-height: 1;
+        white-space: nowrap;
     }
     .msds-vtitle .s {
         font-size: 0.72rem;
         opacity: 0.6;
         line-height: 1;
+        white-space: nowrap;
     }
     @media (max-width: 900px) {
         .msds-vtitle { display: none; }
         .block-container { padding-left: 1rem !important; }
-    }
-    .msds-row-label {
-        font-size: 0.8rem;
-        font-weight: 600;
-        line-height: 2.1rem;
-        white-space: nowrap;
     }
     div[data-testid="stHorizontalBlock"] div[data-testid="column"] {
         gap: 0.15rem !important;
@@ -2971,10 +2970,14 @@ def main():
     </div>
     """, unsafe_allow_html=True)
 
-    # Kurumsal şablon: etiket de aynı satırda, ayrı başlık satırı yok
-    c_lbl, col1, col2, col3, col4 = st.columns([1.6, 3, 3, 2, 1], gap="small")
+    # Kurumsal şablon: etiket alanların olduğu satırın ilk kolonunda
+    c_lbl, col1, col2, col3, col4 = st.columns([2.4, 3, 3, 2, 1], gap="small")
     with c_lbl:
-        st.markdown('<div class="msds-row-label">🏢 Şablon</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div style="font-size:0.82rem;font-weight:600;line-height:2.1rem;'
+            'white-space:nowrap;overflow:visible;">🏢 Kurumsal Şablon</div>',
+            unsafe_allow_html=True
+        )
     with col1:
         co_name = st.text_input("Firma adı", placeholder="Firma adı — Kimya A.Ş.",
                                 label_visibility="collapsed")
