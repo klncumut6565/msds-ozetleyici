@@ -2891,16 +2891,15 @@ def main():
 
         st.caption("⚗️ MSDS Özetleyici v1.5\nGroq + Nvidia NIM + Gemini + OpenAI + Claude + Ollama + Kural Tabanlı · Otomatik yedekleme")
 
-    # ─── ANA SAYFA ÜST ALANI (kompakt) ───
-    # Banner tamamen INLINE stille yazılıyor: class tabanlı CSS'e bağlı değil,
-    # Streamlit HTML'i sanitize etse/class'ı düşürse bile görünür kalır.
-    # Renk seçici doğal yüksekliği input'lardan büyük olduğu ve CSS ile
-    # güvenilir şekilde kısılamadığı için logo ile aynı popover'a alındı;
-    # böylece satırda yalnızca aynı yükseklikte iki input + bir buton kalıyor.
+    # ─── ANA SAYFA BAŞLIĞI ───
+    # NOT: Daha önce burada özel HTML banner (class'lı ve inline stilli iki
+    # varyant) denendi; ikisi de istemcide görünmedi. Bu yüzden Streamlit'in
+    # native st.title/st.caption bileşenleri kullanılıyor — render edilmeleri
+    # garanti. Boşluk, aşağıdaki .block-container CSS'i ile kısılıyor.
     st.markdown("""
     <style>
     .block-container {
-        padding-top: 1rem !important;
+        padding-top: 1.4rem !important;
         padding-bottom: 1rem !important;
     }
     .block-container div[data-testid="stVerticalBlock"] {
@@ -2913,17 +2912,8 @@ def main():
     </style>
     """, unsafe_allow_html=True)
 
-    st.markdown(
-        '<div style="display:flex;align-items:center;flex-wrap:wrap;gap:0.6rem;'
-        'background:linear-gradient(90deg,#1a237e 0%,#303f9f 60%,#3949ab 100%);'
-        'color:#ffffff;border-radius:8px;padding:0.5rem 0.9rem;margin:0 0 0.4rem 0;">'
-        '<span style="font-size:1.15rem;font-weight:700;line-height:1.25;">'
-        '⚗️ MSDS / SDS Özetleyici</span>'
-        '<span style="font-size:0.75rem;opacity:0.85;line-height:1.25;">'
-        'Türkçe · GHS + ADR Bölüm 14 · Yerel veya Online AI</span>'
-        '</div>',
-        unsafe_allow_html=True
-    )
+    st.title("⚗️ MSDS / SDS Özetleyici")
+    st.caption("Türkçe · GHS + ADR Bölüm 14 · Yerel veya Online AI")
 
     # Kurumsal şablon: tek satır — etiket + firma + birim + (logo & renk) popover
     c_lbl, col1, col2, col3 = st.columns([2.2, 3.4, 3.4, 2.4], gap="small")
