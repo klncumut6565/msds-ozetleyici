@@ -2928,7 +2928,7 @@ def main():
     # Sütunlar dar tutuldu; sağda kalan boşluk son (spacer) sütuna bırakılıyor,
     # yoksa alanlar sayfa genişliğine yayılıp gereksiz geniş görünüyor.
     c_lbl, col1, col2, col3, col4, c_pad = st.columns(
-        [1.7, 2.3, 2.3, 1.5, 0.7, 3.0], gap="small"
+        [1.7, 2.3, 3.0, 1.5, 0.7, 2.3], gap="small"
     )
     with c_lbl:
         st.markdown(
@@ -2940,7 +2940,7 @@ def main():
         co_name = st.text_input("Firma adı", placeholder="Firma adı",
                                 label_visibility="collapsed")
     with col2:
-        co_dept = st.text_input("Birim", placeholder="Birim",
+        co_dept = st.text_input("Birim", placeholder="İSG - Kalite Departmanı",
                                 label_visibility="collapsed")
     with col3:
         _has_logo = bool(st.session_state.get("co_logo_file"))
