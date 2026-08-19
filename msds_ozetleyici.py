@@ -2909,14 +2909,27 @@ def main():
     div[data-testid="stHorizontalBlock"] input {
         font-size: 0.82rem !important;
     }
+    /* Renk seçici swatch'ı doğal olarak input'lardan yüksek geliyor.
+       Streamlit sürümleri arasında testid'i değiştiği için birkaç aday
+       selector birlikte yazıldı; hangisi tutarsa yükseklik hizalanır. */
+    div[data-testid="stHorizontalBlock"] div[data-testid="stColorPicker"] > div,
+    div[data-testid="stHorizontalBlock"] div[data-testid="stColorPickerBlock"] > div,
+    div[data-testid="stHorizontalBlock"] div[class*="stColorPicker"] > div {
+        height: 2.4rem !important;
+        min-height: 2.4rem !important;
+    }
     </style>
     """, unsafe_allow_html=True)
 
     st.title("⚗️ MSDS / SDS Özetleyici")
     st.caption("Türkçe · GHS + ADR Bölüm 14 · Yerel veya Online AI")
 
-    # Kurumsal şablon: tek satır — etiket + firma + birim + (logo & renk) popover
-    c_lbl, col1, col2, col3 = st.columns([2.2, 3.4, 3.4, 2.4], gap="small")
+    # Kurumsal şablon: tek satır — etiket, firma, birim, logo, renk ayrı sütunlarda.
+    # Sütunlar dar tutuldu; sağda kalan boşluk son (spacer) sütuna bırakılıyor,
+    # yoksa alanlar sayfa genişliğine yayılıp gereksiz geniş görünüyor.
+    c_lbl, col1, col2, col3, col4, c_pad = st.columns(
+        [1.7, 2.3, 2.3, 1.5, 0.7, 3.0], gap="small"
+    )
     with c_lbl:
         st.markdown(
             '<div style="font-size:0.82rem;font-weight:600;line-height:2.4rem;'
@@ -2924,19 +2937,23 @@ def main():
             unsafe_allow_html=True
         )
     with col1:
-        co_name = st.text_input("Firma adı", placeholder="Firma adı — Kimya A.Ş.",
+        co_name = st.text_input("Firma adı", placeholder="Firma adı",
                                 label_visibility="collapsed")
     with col2:
-        co_dept = st.text_input("Birim", placeholder="Birim — İSG / Kalite",
+        co_dept = st.text_input("Birim", placeholder="Birim",
                                 label_visibility="collapsed")
     with col3:
         _has_logo = bool(st.session_state.get("co_logo_file"))
-        with st.popover("🎨 Logo & Renk" + (" ✓" if _has_logo else ""),
+        with st.popover("🖼️ Logo" + (" ✓" if _has_logo else ""),
                         use_container_width=True):
             co_logo = st.file_uploader("Logo dosyası (PNG / JPG / SVG)",
                                        type=["png", "jpg", "jpeg", "svg"],
                                        key="co_logo_file")
-            co_color = st.color_picker("Tema rengi", "#1a237e")
+    with col4:
+        co_color = st.color_picker("Tema rengi", "#1a237e",
+                                   label_visibility="collapsed")
+    with c_pad:
+        st.empty()
 
     company = {"name": co_name, "dept": co_dept, "color": co_color, "logo": None}
     if co_logo:
