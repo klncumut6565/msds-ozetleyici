@@ -2889,31 +2889,43 @@ def main():
 
         st.caption("⚗️ MSDS Özetleyici v1.5\nGroq + Nvidia NIM + Gemini + OpenAI + Claude + Ollama + Kural Tabanlı · Otomatik yedekleme")
 
-    # ─── KURUMSAL ŞABLON (Ana Sayfa - Tek Satırda - Kompakt) ───
+    # ─── BAŞLIK (Ana Sayfa - En Üst) ───
+    st.title("⚗️ MSDS / SDS Özetleyici")
+    st.caption("Türkçe · GHS + ADR Bölüm 14 · Yerel veya Online AI")
+
+    # ─── KURUMSAL ŞABLON (Ana Sayfa - Tek Satırda - Ultra Kompakt) ───
     st.divider()
     
-    # CSS ile satır yüksekliğini %75 küçült (padding, margin, spacing azalt)
+    # CSS ile satır yüksekliğini %75 + %50 daha küçült (toplam ~88% azalış)
     st.markdown("""
     <style>
     [data-testid="column"] {
-        gap: 0.25rem !important;
+        gap: 0.1rem !important;
     }
     div[data-baseweb="input"] {
-        padding: 0.1rem 0.2rem !important;
+        padding: 0 !important;
+        margin: 0 !important;
     }
     input, [data-baseweb="select"] {
-        font-size: 0.85rem !important;
-        padding: 0.25rem !important;
-        height: 1.8rem !important;
+        font-size: 0.75rem !important;
+        padding: 0.1rem 0.15rem !important;
+        height: 1.4rem !important;
         line-height: 1 !important;
+        margin: 0 !important;
     }
     label {
-        font-size: 0.8rem !important;
-        margin-bottom: 0.15rem !important;
+        font-size: 0.7rem !important;
+        margin: 0 !important;
         padding: 0 !important;
+        display: none !important;
     }
     [data-testid="stSubheader"] {
-        margin-bottom: 0.5rem !important;
+        margin: 0.1rem 0 0.2rem 0 !important;
+        padding: 0 !important;
+        font-size: 1rem !important;
+    }
+    [data-testid="stDivider"] {
+        margin: 0.2rem 0 !important;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -2971,6 +2983,7 @@ def main():
     default_models = {
         "groq": "openai/gpt-oss-120b",
         "gemini": "gemini-3.1-flash-lite",
+        "nvidia_nim": "deepseek/deepseek-r1",
         "openrouter": "openrouter/free",
         "openai": "gpt-4o-mini",
         "claude": "claude-haiku-4-5-20251001",
@@ -2982,10 +2995,6 @@ def main():
 
     # Seçili motor hazır mı?
     ready = engine_available(engine)
-
-    # ── ANA ALAN ──
-    st.title("⚗️ MSDS / SDS Özetleyici")
-    st.caption("Türkçe · GHS + ADR Bölüm 14 · Yerel veya Online AI")
 
     tab_single, tab_batch = st.tabs(["🔍 Tekli Analiz", "📦 Toplu İşlem (Batch)"])
 
