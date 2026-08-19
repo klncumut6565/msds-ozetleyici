@@ -2730,14 +2730,11 @@ def main():
                      "tümünü görmek için build.nvidia.com/models'ı ziyaret et."
             )
             model = model_ids[model_options.index(selected)]
-            st.info("💡 **Tüm 80+ modeli görmek için** → [build.nvidia.com/models](https://build.nvidia.com/models) — "
-                    "DeepSeek, Llama, Qwen, Mistral, Nemotron, GLM, Command, Jamba, vb.")
             
             with st.expander("ℹ️ Neden Nvidia NIM?"):
                 st.markdown(
-                    "Nvidia NIM **80+ ücretsiz modele** tek anahtarla erişim sağlar. "
-                    "UI'da sadece popüler 4 model gösteriyoruz; tüm listeyi görmek için "
-                    "[build.nvidia.com/models](https://build.nvidia.com/models) ziyaret et. "
+                    "**API anahtarı için:** [build.nvidia.com/models](https://build.nvidia.com/models) (ücretsiz, e-posta ile kayıt)\n\n"
+                    "Nvidia NIM ücretsiz katmanda 80+ modele erişim sağlar. "
                     "DeepSeek, Qwen, Llama gibi frontier modellerine ücretsiz erişim. "
                     "Kredi kartı gerekmez. Hız limiti: ~40 istek/dakika (dakikalık window). "
                     "Groq'tan sonraki ideal fallback: benzer performans, daha geniş model seçimi."
