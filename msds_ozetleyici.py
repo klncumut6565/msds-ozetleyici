@@ -866,6 +866,8 @@ MODEL_FALLBACKS = {
     # Groq: llama-3.3-70b ve llama-3.1-8b 17 Haziran 2026'da kullanımdan
     # kaldırıldı; Groq'un resmi önerdiği halefler:
     "groq": ["openai/gpt-oss-120b", "openai/gpt-oss-20b"],
+    # Nvidia NIM: 80+ ücretsiz model, build.nvidia.com/models'tan
+    "nvidia_nim": ["deepseek/deepseek-r1", "meta-llama/llama-3.3-70b-instruct"],
     "gemini": ["gemini-3.1-flash-lite", "gemini-3.5-flash"],
     "openrouter": ["openrouter/free", "deepseek/deepseek-r1:free",
                    "meta-llama/llama-3.3-70b-instruct:free"],
@@ -1510,6 +1512,7 @@ def sonucu_turkceye_cevir(data: dict, chain: list, models: dict, keys: dict,
                     ollama_url=ollama_url,
                     gemini_api_key=keys.get("gemini", ""),
                     groq_api_key=keys.get("groq", ""),
+                    nvidia_api_key=keys.get("nvidia_nim", ""),
                     openai_api_key=keys.get("openai", ""),
                     claude_api_key=keys.get("claude", ""),
                     openrouter_api_key=keys.get("openrouter", ""),
@@ -1651,6 +1654,20 @@ def call_groq(text: str, api_key: str, model: str = "openai/gpt-oss-120b", max_r
         raise RuntimeError("Groq API anahtarı girilmemiş.")
     return call_openai_compatible(text, api_key, model,
                                   base_url="https://api.groq.com/openai/v1",
+                                  char_limit=999999, max_retries=max_retries,
+                                  prompt_template=prompt_template)
+
+
+def call_nvidia_nim(text: str, api_key: str, model: str = "deepseek/deepseek-r1", max_retries: int = 5,
+                    prompt_template: str = None) -> dict:
+    """Nvidia NIM API (OpenAI-uyumlu, 80+ ücretsiz model, build.nvidia.com/models).
+    Metin KIRPILMAZ — tam belge gönderilir. Groq'tan sonraki ücretsiz fallback seçeneği.
+    Hız limiti: ~40 RPM (dakikalık istek). Model yedekleme (R1→Llama 3.3) 
+    call_ai seviyesinde MODEL_FALLBACKS ile yapılır."""
+    if not api_key:
+        raise RuntimeError("Nvidia NIM API anahtarı girilmemiş.")
+    return call_openai_compatible(text, api_key, model,
+                                  base_url="https://integrate.api.nvidia.com/v1",
                                   char_limit=999999, max_retries=max_retries,
                                   prompt_template=prompt_template)
 
@@ -1958,6 +1975,7 @@ def infer_pictograms_from_text(data: dict) -> list:
 # Her motor için: anahtar gerektirir mi, insan-okur etiket.
 ENGINE_LABELS = {
     "groq": "⚡ Groq",
+    "nvidia_nim": "🎮 Nvidia NIM (ücretsiz, 80+ model)",
     "gemini": "☁️ Gemini",
     "openrouter": "🌐 OpenRouter",
     "openai": "🤖 OpenAI",
@@ -1968,11 +1986,11 @@ ENGINE_LABELS = {
 # Failover sırası: ücretsiz/yüksek kapasiteli motorlar önce.
 # 'kural' anahtar/kota gerektirmez; zincire eklenirse EN SONA konur ki
 # tüm AI kotaları dolduğunda işlem durmak yerine AI'sız modda tamamlansın.
-FAILOVER_ORDER = ["groq", "gemini", "openrouter", "openai", "claude", "ollama", "kural"]
+FAILOVER_ORDER = ["groq", "nvidia_nim", "gemini", "openrouter", "openai", "claude", "ollama", "kural"]
 
 
 def _call_single_model(text, engine, model, ollama_url,
-                       gemini_api_key, groq_api_key, openai_api_key, claude_api_key, openrouter_api_key,
+                       gemini_api_key, groq_api_key, nvidia_api_key, openai_api_key, claude_api_key, openrouter_api_key,
                        prompt_template=None):
     """Tek bir motoru, tek bir modelle çağırır (model zinciri YOK).
     prompt_template verilmezse standart MSDS çıkarım şablonu kullanılır (kural motoru hariç —
@@ -1983,6 +2001,8 @@ def _call_single_model(text, engine, model, ollama_url,
         return call_gemini(text, gemini_api_key, model, prompt_template=prompt_template)
     elif engine == "groq":
         return call_groq(text, groq_api_key, model, prompt_template=prompt_template)
+    elif engine == "nvidia_nim":
+        return call_nvidia_nim(text, nvidia_api_key, model, prompt_template=prompt_template)
     elif engine == "openrouter":
         return call_openrouter(text, openrouter_api_key, model, prompt_template=prompt_template)
     elif engine == "openai":
@@ -1996,7 +2016,7 @@ def _call_single_model(text, engine, model, ollama_url,
 
 
 def call_ai(text: str, engine: str, model: str, ollama_url: str = "",
-            gemini_api_key: str = "", groq_api_key: str = "", openai_api_key: str = "",
+            gemini_api_key: str = "", groq_api_key: str = "", nvidia_api_key: str = "", openai_api_key: str = "",
             claude_api_key: str = "", openrouter_api_key: str = "",
             prompt_template: str = None, post_process: bool = True) -> dict:
     """Seçili AI motoruna göre çağrı. Motorun MODEL ZİNCİRİNİ sırayla dener:
@@ -2016,7 +2036,7 @@ def call_ai(text: str, engine: str, model: str, ollama_url: str = "",
         try:
             data = _call_single_model(
                 text, engine, mdl, ollama_url,
-                gemini_api_key, groq_api_key, openai_api_key, claude_api_key, openrouter_api_key,
+                gemini_api_key, groq_api_key, nvidia_api_key, openai_api_key, claude_api_key, openrouter_api_key,
                 prompt_template=prompt_template
             )
             break  # başarılı → dur
@@ -2369,6 +2389,7 @@ def analyze_with_failover(text, chain, models, keys, ollama_url, exhausted, on_s
                     ollama_url=ollama_url,
                     gemini_api_key=keys.get("gemini", ""),
                     groq_api_key=keys.get("groq", ""),
+                    nvidia_api_key=keys.get("nvidia_nim", ""),
                     openai_api_key=keys.get("openai", ""),
                     claude_api_key=keys.get("claude", ""),
                     openrouter_api_key=keys.get("openrouter", ""),
@@ -2609,6 +2630,7 @@ def main():
         _local_ok, _ = check_ollama("http://localhost:11434")
         engine_options = [
             "⚡ Groq — çok hızlı, yüksek ücretsiz limit",
+            "🎮 Nvidia NIM — 80+ ücretsiz model, ~40 RPM, build.nvidia.com/models",
             "☁️ Gemini — Google, ücretsiz",
             "🌐 OpenRouter — uzun belgeler için, ücretsiz modeller",
             "🤖 OpenAI — ücretli",
@@ -2616,7 +2638,7 @@ def main():
             "🖥️ Ollama (yerel) — sınırsız, donanıma bağlı",
             "📐 Kural Tabanlı — AI'sız, anahtar/kota YOK, sınırsız",
         ]
-        engine_keys = ["groq", "gemini", "openrouter", "openai", "claude", "ollama", "kural"]
+        engine_keys = ["groq", "nvidia_nim", "gemini", "openrouter", "openai", "claude", "ollama", "kural"]
         default_idx = 5 if _local_ok else 0  # yerel varsa Ollama, yoksa Groq
         engine_label = st.radio("Motor seç", engine_options, index=default_idx,
                                 label_visibility="collapsed")
@@ -2624,7 +2646,7 @@ def main():
 
         ollama_url = "http://localhost:11434"
         model = ""
-        gemini_api_key = groq_api_key = openai_api_key = claude_api_key = openrouter_api_key = ""
+        gemini_api_key = groq_api_key = nvidia_api_key = openai_api_key = claude_api_key = openrouter_api_key = ""
         ollama_ok = False
 
         if engine == "ollama":
@@ -2668,6 +2690,25 @@ def main():
                     "Not: `llama-3.3-70b-versatile` ve `llama-3.1-8b-instant` modelleri 17 Haziran 2026'da "
                     "kullanımdan kaldırıldı; artık `gpt-oss-120b` ve `gpt-oss-20b` kullanılıyor. "
                     "Anahtar: [console.groq.com/keys](https://console.groq.com/keys)"
+                )
+
+        elif engine == "nvidia_nim":
+            model = st.selectbox(
+                "Model",
+                ["deepseek/deepseek-r1", "meta-llama/llama-3.3-70b-instruct", 
+                 "qwen/qwen-2.5-72b-instruct", "mistral/mistral-large"],
+                help="DeepSeek R1 (önerilen): güçlü akıl yürütme. Llama 3.3: hızlı ve güvenilir. "
+                     "Diğerleri: alternatif modellerden seçin."
+            )
+            st.markdown('🔑 **Ücretsiz Nvidia API anahtarı** → [build.nvidia.com/models](https://build.nvidia.com/models)')
+            st.caption("🎮 NIM API anahtarını aşağıdaki **🔁 Otomatik yedekleme** bölümüne girin (kayıtlı kalır).")
+            with st.expander("ℹ️ Neden Nvidia NIM?"):
+                st.markdown(
+                    "Nvidia NIM **80+ ücretsiz modele** tek anahtarla erişim sağlar. "
+                    "DeepSeek, Qwen, Llama gibi frontier modellerine build.nvidia.com üzerinden ücretsiz erişim. "
+                    "Kredi kartı gerekmez. Hız limiti: ~40 istek/dakika (dakikalık window). "
+                    "Groq'tan sonraki ideal fallback: benzer performans, daha geniş model seçimi. "
+                    "Anahtar: [build.nvidia.com/models](https://build.nvidia.com/models) (e-posta ile kayıt)"
                 )
 
         elif engine == "openrouter":
@@ -2761,6 +2802,8 @@ def main():
             # Seçili motorun anahtarı yukarıda zaten girildiyse, burada da aynı session değeri görünür.
             groq_fo = st.text_input("⚡ Groq anahtarı", type="password", placeholder="gsk_...",
                                     key="api_key_groq", help="Groq için. gsk_ ile başlar.")
+            nvidia_fo = st.text_input("🎮 Nvidia NIM anahtarı", type="password", placeholder="nvapi-...",
+                                      key="api_key_nvidia_nim", help="Nvidia NIM için. build.nvidia.com/models'ten alın.")
             gemini_fo = st.text_input("☁️ Gemini anahtarı", type="password", placeholder="AIza...",
                                       key="api_key_gemini", help="Gemini için. AIza ile başlar.")
             openrouter_fo = st.text_input("🌐 OpenRouter anahtarı", type="password", placeholder="sk-or-...",
@@ -2773,6 +2816,7 @@ def main():
             # Hangi anahtarların girildiğini özetle (kullanıcı net görsün)
             girilenler = []
             if groq_fo: girilenler.append("⚡ Groq")
+            if nvidia_fo: girilenler.append("🎮 Nvidia NIM")
             if gemini_fo: girilenler.append("☁️ Gemini")
             if openrouter_fo: girilenler.append("🌐 OpenRouter")
             if openai_fo: girilenler.append("🤖 OpenAI")
@@ -2793,6 +2837,7 @@ def main():
         # Tüm anahtarlar session_state'ten okunur — HER KULLANICI KENDİ anahtarını girer.
         # (Anahtar diske/sunucuya yazılmaz, başka kullanıcıya geçmez, sadece bu oturumda yaşar.)
         groq_api_key = st.session_state.get("api_key_groq", "") or ""
+        nvidia_api_key = st.session_state.get("api_key_nvidia_nim", "") or ""
         gemini_api_key = st.session_state.get("api_key_gemini", "") or ""
         openrouter_api_key = st.session_state.get("api_key_openrouter", "") or ""
         openai_api_key = st.session_state.get("api_key_openai", "") or ""
@@ -2812,7 +2857,7 @@ def main():
         # analyze_with_fallback içindeki cached_call sarmalayıcısını geri getir,
         # ve buraya cache_stats/clear_cache UI'ını geri koy.
 
-        st.caption("⚗️ MSDS Özetleyici v1.4\nGroq + Gemini + OpenAI + Claude + Ollama + Kural Tabanlı · Otomatik yedekleme")
+        st.caption("⚗️ MSDS Özetleyici v1.5\nGroq + Nvidia NIM + Gemini + OpenAI + Claude + Ollama + Kural Tabanlı · Otomatik yedekleme")
 
     company = {"name": co_name, "dept": co_dept, "color": co_color, "logo": None}
     if co_logo:
@@ -2823,6 +2868,7 @@ def main():
     # Motorların anahtar/erişim durumunu topla (failover için)
     engine_keys_map = {
         "groq": groq_api_key,
+        "nvidia_nim": nvidia_api_key,
         "gemini": gemini_api_key,
         "openrouter": openrouter_api_key,
         "openai": openai_api_key,
@@ -2919,7 +2965,7 @@ def main():
                 with st.spinner(wait_msg):
                     try:
                         _chain = build_failover_chain(engine)
-                        _keys = {"gemini": gemini_api_key, "groq": groq_api_key, "openai": openai_api_key, "claude": claude_api_key, "openrouter": openrouter_api_key}
+                        _keys = {"gemini": gemini_api_key, "groq": groq_api_key, "nvidia_nim": nvidia_api_key, "openai": openai_api_key, "claude": claude_api_key, "openrouter": openrouter_api_key}
                         _exhausted = set()
                         result, _used = analyze_with_failover(
                             pdf_text, _chain, default_models, _keys, ollama_url, _exhausted
@@ -3099,7 +3145,7 @@ def main():
                 # Failover zinciri ve paylaşımlı durum
                 chain = build_failover_chain(engine)
                 exhausted = set()           # bu oturumda kotası dolan motorlar
-                keys = {"gemini": gemini_api_key, "groq": groq_api_key, "openai": openai_api_key, "claude": claude_api_key, "openrouter": openrouter_api_key}
+                keys = {"gemini": gemini_api_key, "groq": groq_api_key, "nvidia_nim": nvidia_api_key, "openai": openai_api_key, "claude": claude_api_key, "openrouter": openrouter_api_key}
                 current_engine = {"val": chain[0] if chain else engine}
 
                 def _on_switch(eng):
@@ -3287,7 +3333,7 @@ def main():
                     rstatus = st.empty()
                     rchain = build_failover_chain(engine)
                     rexhausted = set()
-                    rkeys = {"gemini": gemini_api_key, "groq": groq_api_key, "openai": openai_api_key, "claude": claude_api_key, "openrouter": openrouter_api_key}
+                    rkeys = {"gemini": gemini_api_key, "groq": groq_api_key, "nvidia_nim": nvidia_api_key, "openai": openai_api_key, "claude": claude_api_key, "openrouter": openrouter_api_key}
                     for n, i in enumerate(err_indices):
                         rec = results[i]
                         rstatus.write(f"Tekrar deneniyor: **{rec['filename']}** ({n + 1}/{len(err_indices)})")
