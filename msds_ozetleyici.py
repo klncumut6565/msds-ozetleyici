@@ -1986,7 +1986,7 @@ ENGINE_LABELS = {
 # Failover sırası: ücretsiz/yüksek kapasiteli motorlar önce.
 # 'kural' anahtar/kota gerektirmez; zincire eklenirse EN SONA konur ki
 # tüm AI kotaları dolduğunda işlem durmak yerine AI'sız modda tamamlansın.
-FAILOVER_ORDER = ["groq", "nvidia_nim", "gemini", "openrouter", "openai", "claude", "ollama", "kural"]
+FAILOVER_ORDER = ["groq", "gemini", "nvidia_nim", "openrouter", "openai", "claude", "ollama", "kural"]
 
 
 def _call_single_model(text, engine, model, ollama_url,
