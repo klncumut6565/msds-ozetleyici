@@ -2928,7 +2928,7 @@ def main():
     # Sütunlar dar tutuldu; sağda kalan boşluk son (spacer) sütuna bırakılıyor,
     # yoksa alanlar sayfa genişliğine yayılıp gereksiz geniş görünüyor.
     c_lbl, col1, col2, col3, col4, c_pad = st.columns(
-        [1.7, 2.3, 3.0, 1.5, 0.7, 2.3], gap="small"
+        [1.7, 2.3, 3.0, 2.6, 0.7, 1.2], gap="small"
     )
     with c_lbl:
         st.markdown(
@@ -2944,7 +2944,7 @@ def main():
                                 label_visibility="collapsed")
     with col3:
         _has_logo = bool(st.session_state.get("co_logo_file"))
-        with st.popover("🖼️ Logo" + (" ✓" if _has_logo else ""),
+        with st.popover("🖼️ Firma Logosu Yükle" + (" ✓" if _has_logo else ""),
                         use_container_width=True):
             co_logo = st.file_uploader("Logo dosyası (PNG / JPG / SVG)",
                                        type=["png", "jpg", "jpeg", "svg"],
