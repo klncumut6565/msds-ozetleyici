@@ -2727,13 +2727,14 @@ def main():
                 "Model (Popüler 4 — tüm 80+ için link aşağıda)",
                 model_options,
                 help="Bu 4 model en çok kullanılan. Nvidia NIM'de 80+ farklı model mevcut — "
-                     "tümünü görmek için build.nvidia.com/models'ı ziyaret et."
+                     "tam katalog için build.nvidia.com/models adresine bakabilirsin."
             )
             model = model_ids[model_options.index(selected)]
             
             with st.expander("ℹ️ Neden Nvidia NIM?"):
                 st.markdown(
-                    "**API anahtarı için:** [build.nvidia.com/models](https://build.nvidia.com/models) (ücretsiz, e-posta ile kayıt)\n\n"
+                    "**API anahtarı için:** [build.nvidia.com/settings/api-keys](https://build.nvidia.com/settings/api-keys) "
+                    "(ücretsiz, e-posta ile kayıt — giriş yaptıktan sonra *Generate API Key*)\n\n"
                     "Nvidia NIM ücretsiz katmanda 80+ modele erişim sağlar. "
                     "DeepSeek, Qwen, Llama gibi frontier modellerine ücretsiz erişim. "
                     "Kredi kartı gerekmez. Hız limiti: ~40 istek/dakika (dakikalık window). "
@@ -2835,7 +2836,7 @@ def main():
                 "**🔑 Ücretsiz/ücretli anahtar alma adresleri:**\n"
                 "- ⚡ **Groq** (ücretsiz, kredi kartsız, en yüksek limit): [console.groq.com/keys](https://console.groq.com/keys)\n"
                 "- ☁️ **Gemini** (ücretsiz): [aistudio.google.com/apikey](https://aistudio.google.com/apikey)\n"
-                "- 🎮 **Nvidia NIM** (ücretsiz, 80+ model, kredi kartsız): [build.nvidia.com/models](https://build.nvidia.com/models)\n"
+                "- 🎮 **Nvidia NIM** (ücretsiz, 80+ model, kredi kartsız): [build.nvidia.com/settings/api-keys](https://build.nvidia.com/settings/api-keys)\n"
                 "- 🌐 **OpenRouter** (ücretsiz modeller, uzun belge, kredi kartsız): [openrouter.ai/keys](https://openrouter.ai/keys)\n"
                 "- 🤖 **OpenAI** (ücretli): [platform.openai.com/api-keys](https://platform.openai.com/api-keys)\n"
                 "- 🧠 **Claude** (ücretli, **ön ödemeli kredi gerekir** — Claude Pro aboneliği API'yı KAPSAMAZ): [console.anthropic.com](https://console.anthropic.com/settings/keys)"
@@ -2847,7 +2848,8 @@ def main():
             groq_fo = st.text_input("⚡ Groq anahtarı", type="password", placeholder="gsk_...",
                                     key="api_key_groq", help="Groq için. gsk_ ile başlar.")
             nvidia_fo = st.text_input("🎮 Nvidia NIM anahtarı", type="password", placeholder="nvapi-...",
-                                      key="api_key_nvidia_nim", help="Nvidia NIM için. build.nvidia.com/models'ten alın.")
+                                      key="api_key_nvidia_nim",
+                                      help="Nvidia NIM için. build.nvidia.com/settings/api-keys adresinden alın. nvapi- ile başlar.")
             gemini_fo = st.text_input("☁️ Gemini anahtarı", type="password", placeholder="AIza...",
                                       key="api_key_gemini", help="Gemini için. AIza ile başlar.")
             openrouter_fo = st.text_input("🌐 OpenRouter anahtarı", type="password", placeholder="sk-or-...",
