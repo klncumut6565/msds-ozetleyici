@@ -2892,8 +2892,11 @@ def main():
         st.caption("⚗️ MSDS Özetleyici v1.5\nGroq + Nvidia NIM + Gemini + OpenAI + Claude + Ollama + Kural Tabanlı · Otomatik yedekleme")
 
     # ─── ANA SAYFA ÜST ALANI (kompakt) ───
-    # Başlık: arka fonlu ince yatay şerit. Belirgin ama tek satır olduğu için
-    # ayrı bir "başlık alanı" kaplamıyor. Altında kurumsal şablon tek satır.
+    # Banner tamamen INLINE stille yazılıyor: class tabanlı CSS'e bağlı değil,
+    # Streamlit HTML'i sanitize etse/class'ı düşürse bile görünür kalır.
+    # Renk seçici doğal yüksekliği input'lardan büyük olduğu ve CSS ile
+    # güvenilir şekilde kısılamadığı için logo ile aynı popover'a alındı;
+    # böylece satırda yalnızca aynı yükseklikte iki input + bir buton kalıyor.
     st.markdown("""
     <style>
     .block-container {
@@ -2903,68 +2906,31 @@ def main():
     .block-container div[data-testid="stVerticalBlock"] {
         gap: 0.4rem !important;
     }
-    hr {
-        margin: 0.35rem 0 !important;
-    }
-    /* Arka fonlu başlık şeridi */
-    .msds-banner {
-        display: flex;
-        align-items: center;
-        flex-wrap: wrap;
-        gap: 0.6rem;
-        background: linear-gradient(90deg, #1a237e 0%, #303f9f 60%, #3949ab 100%);
-        color: #fff;
-        border-radius: 8px;
-        padding: 0.45rem 0.9rem;
-        margin-bottom: 0.15rem;
-    }
-    .msds-banner .t {
-        font-size: 1.15rem;
-        font-weight: 700;
-        line-height: 1.2;
-        letter-spacing: 0.01em;
-    }
-    .msds-banner .s {
-        font-size: 0.75rem;
-        opacity: 0.85;
-        line-height: 1.2;
-    }
-    div[data-testid="stHorizontalBlock"] div[data-testid="column"] {
-        gap: 0.15rem !important;
-    }
+    hr { margin: 0.35rem 0 !important; }
     div[data-testid="stHorizontalBlock"] input {
-        font-size: 0.8rem !important;
-        padding: 0.15rem 0.4rem !important;
-        height: 2.1rem !important;
-        line-height: 1 !important;
-    }
-    div[data-testid="stHorizontalBlock"] button[data-testid="stPopoverButton"] {
-        height: 2.1rem !important;
-        min-height: 2.1rem !important;
-        padding: 0 0.6rem !important;
-        font-size: 0.8rem !important;
-        width: 100% !important;
-    }
-    div[data-testid="stHorizontalBlock"] div[data-testid="stColorPickerBlock"] > div,
-    div[data-testid="stHorizontalBlock"] div[data-testid="stColorPicker"] > div {
-        height: 2.1rem !important;
-    }
-    div[data-testid="stHorizontalBlock"] [data-testid="stWidgetLabel"] {
-        display: none !important;
+        font-size: 0.82rem !important;
     }
     </style>
-    <div class="msds-banner">
-        <span class="t">⚗️ MSDS / SDS Özetleyici</span>
-        <span class="s">Türkçe · GHS + ADR Bölüm 14 · Yerel veya Online AI</span>
-    </div>
     """, unsafe_allow_html=True)
 
-    # Kurumsal şablon: etiket alanların olduğu satırın ilk kolonunda
-    c_lbl, col1, col2, col3, col4 = st.columns([2.4, 3, 3, 2, 1], gap="small")
+    st.markdown(
+        '<div style="display:flex;align-items:center;flex-wrap:wrap;gap:0.6rem;'
+        'background:linear-gradient(90deg,#1a237e 0%,#303f9f 60%,#3949ab 100%);'
+        'color:#ffffff;border-radius:8px;padding:0.5rem 0.9rem;margin:0 0 0.4rem 0;">'
+        '<span style="font-size:1.15rem;font-weight:700;line-height:1.25;">'
+        '⚗️ MSDS / SDS Özetleyici</span>'
+        '<span style="font-size:0.75rem;opacity:0.85;line-height:1.25;">'
+        'Türkçe · GHS + ADR Bölüm 14 · Yerel veya Online AI</span>'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+    # Kurumsal şablon: tek satır — etiket + firma + birim + (logo & renk) popover
+    c_lbl, col1, col2, col3 = st.columns([2.2, 3.4, 3.4, 2.4], gap="small")
     with c_lbl:
         st.markdown(
-            '<div style="font-size:0.82rem;font-weight:600;line-height:2.1rem;'
-            'white-space:nowrap;overflow:visible;">🏢 Kurumsal Şablon</div>',
+            '<div style="font-size:0.82rem;font-weight:600;line-height:2.4rem;'
+            'white-space:nowrap;">🏢 Kurumsal Şablon</div>',
             unsafe_allow_html=True
         )
     with col1:
@@ -2974,13 +2940,13 @@ def main():
         co_dept = st.text_input("Birim", placeholder="Birim — İSG / Kalite",
                                 label_visibility="collapsed")
     with col3:
-        _logo_label = "🖼️ Logo ✓" if st.session_state.get("co_logo_file") else "🖼️ Logo Yükle"
-        with st.popover(_logo_label, use_container_width=True):
+        _has_logo = bool(st.session_state.get("co_logo_file"))
+        with st.popover("🎨 Logo & Renk" + (" ✓" if _has_logo else ""),
+                        use_container_width=True):
             co_logo = st.file_uploader("Logo dosyası (PNG / JPG / SVG)",
                                        type=["png", "jpg", "jpeg", "svg"],
                                        key="co_logo_file")
-    with col4:
-        co_color = st.color_picker("Tema rengi", "#1a237e", label_visibility="collapsed")
+            co_color = st.color_picker("Tema rengi", "#1a237e")
 
     company = {"name": co_name, "dept": co_dept, "color": co_color, "logo": None}
     if co_logo:
