@@ -867,7 +867,9 @@ MODEL_FALLBACKS = {
     # kaldırıldı; Groq'un resmi önerdiği halefler:
     "groq": ["openai/gpt-oss-120b", "openai/gpt-oss-20b"],
     # Nvidia NIM: 80+ ücretsiz model, build.nvidia.com/models'tan
-    "nvidia_nim": ["deepseek/deepseek-r1", "meta-llama/llama-3.3-70b-instruct"],
+    # Fallback zinciri: R1 (akıl) → Llama (hızlı) → Qwen (türkçe) → Mistral (dengeli)
+    "nvidia_nim": ["deepseek/deepseek-r1", "meta-llama/llama-3.3-70b-instruct", 
+                   "qwen/qwen-2.5-72b-instruct", "mistral/mistral-large"],
     "gemini": ["gemini-3.1-flash-lite", "gemini-3.5-flash"],
     "openrouter": ["openrouter/free", "deepseek/deepseek-r1:free",
                    "meta-llama/llama-3.3-70b-instruct:free"],
@@ -2712,19 +2714,37 @@ def main():
                 )
 
         elif engine == "nvidia_nim":
-            model = st.selectbox(
-                "Model",
-                ["deepseek/deepseek-r1", "meta-llama/llama-3.3-70b-instruct", 
-                 "qwen/qwen-2.5-72b-instruct", "mistral/mistral-large"],
-                help="DeepSeek R1 (önerilen): güçlü akıl yürütme. Llama 3.3: hızlı ve güvenilir. "
-                     "Diğerleri: alternatif modellerden seçin."
+            model_options = [
+                "🧠 DeepSeek R1 (önerilen) — güçlü akıl yürütme",
+                "🦙 Llama 3.3 70B — hızlı ve güvenilir",
+                "🟧 Qwen 2.5 72B — türkçe iyisi",
+                "🎯 Mistral Large — dengeli"
+            ]
+            model_ids = [
+                "deepseek/deepseek-r1",
+                "meta-llama/llama-3.3-70b-instruct",
+                "qwen/qwen-2.5-72b-instruct",
+                "mistral/mistral-large"
+            ]
+            selected = st.selectbox(
+                "Model (Popüler 4 — tüm 80+ için link aşağıda)",
+                model_options,
+                help="Bu 4 model en çok kullanılan. Nvidia NIM'de 80+ farklı model mevcut — "
+                     "tümünü görmek için build.nvidia.com/models'ı ziyaret et."
             )
+            model = model_ids[model_options.index(selected)]
+            
             st.markdown('🔑 **Ücretsiz Nvidia API anahtarı** → [build.nvidia.com/models](https://build.nvidia.com/models)')
             st.caption("🎮 NIM API anahtarını aşağıdaki **🔁 Otomatik yedekleme** bölümüne girin (kayıtlı kalır).")
+            st.info("💡 **Tüm 80+ modeli görmek için** → [build.nvidia.com/models](https://build.nvidia.com/models) — "
+                    "DeepSeek, Llama, Qwen, Mistral, Nemotron, GLM, Command, Jamba, vb.")
+            
             with st.expander("ℹ️ Neden Nvidia NIM?"):
                 st.markdown(
                     "Nvidia NIM **80+ ücretsiz modele** tek anahtarla erişim sağlar. "
-                    "DeepSeek, Qwen, Llama gibi frontier modellerine build.nvidia.com üzerinden ücretsiz erişim. "
+                    "UI'da sadece popüler 4 model gösteriyoruz; tüm listeyi görmek için "
+                    "[build.nvidia.com/models](https://build.nvidia.com/models) ziyaret et. "
+                    "DeepSeek, Qwen, Llama gibi frontier modellerine ücretsiz erişim. "
                     "Kredi kartı gerekmez. Hız limiti: ~40 istek/dakika (dakikalık window). "
                     "Groq'tan sonraki ideal fallback: benzer performans, daha geniş model seçimi. "
                     "Anahtar: [build.nvidia.com/models](https://build.nvidia.com/models) (e-posta ile kayıt)"
