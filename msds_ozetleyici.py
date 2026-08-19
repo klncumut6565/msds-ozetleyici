@@ -2688,18 +2688,24 @@ def main():
                        "çalışma için çevrimiçi Groq/Gemini de kullanabilirsiniz.")
 
         elif engine == "groq":
-            model = st.selectbox(
+            model_options = [
+                "🚀 GPT-OSS 120B (önerilen) — Groq'un llama-3.3-70b halefi",
+                "⚡ GPT-OSS 20B — hızlı, yüksek günlük limit"
+            ]
+            model_ids = ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]
+            selected_model = st.selectbox(
                 "Model",
-                ["openai/gpt-oss-120b", "openai/gpt-oss-20b"],
-                help="gpt-oss-120b (önerilen): Groq'un llama-3.3-70b halefi, uzun MSDS'lerde daha başarılı. "
-                     "gpt-oss-20b: llama-3.1-8b halefi, daha hızlı ve yüksek günlük limit."
+                model_options,
+                help="Groq API model ID'si 'openai/gpt-oss-*' formatında; bu Groq tarafından optimize edilmiş açık kaynak modelleri gösterir."
             )
+            model = model_ids[model_options.index(selected_model)]
             st.markdown('🔑 **Ücretsiz Groq anahtarı al** → [console.groq.com](https://console.groq.com/keys)')
             st.caption("⚡ Groq anahtarını aşağıdaki **🔁 Otomatik yedekleme** bölümüne girin (kayıtlı kalır).")
             with st.expander("ℹ️ Neden Groq?"):
                 st.markdown(
                     "Groq ücretsiz katmanda **günlük binlerce istek** verir ve çok hızlıdır — "
                     "toplu işlem için en uygun seçenek. Kredi kartı gerekmez. "
+                    "**Model:** GPT-OSS = Groq Open Source Siblings — Groq'un kendi optimize ettiği modeller (OpenAI ürünü DEĞİL). "
                     "Not: `llama-3.3-70b-versatile` ve `llama-3.1-8b-instant` modelleri 17 Haziran 2026'da "
                     "kullanımdan kaldırıldı; artık `gpt-oss-120b` ve `gpt-oss-20b` kullanılıyor. "
                     "Anahtar: [console.groq.com/keys](https://console.groq.com/keys)"
