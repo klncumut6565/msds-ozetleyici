@@ -2744,18 +2744,32 @@ def main():
                 )
 
         elif engine == "openrouter":
-            model = st.selectbox(
+            model_options = [
+                "🔄 Auto Select Free (önerilen) — her zaman çalışan ücretsiz model",
+                "🧠 DeepSeek R1 Free",
+                "🟧 Qwen Coder Free",
+                "🦙 Llama 3.3 70B Free",
+                "🚀 GPT-OSS 20B Free"
+            ]
+            model_ids = [
+                "openrouter/free",
+                "deepseek/deepseek-r1:free",
+                "qwen/qwen3-coder:free",
+                "meta-llama/llama-3.3-70b-instruct:free",
+                "openai/gpt-oss-20b:free"
+            ]
+            selected = st.selectbox(
                 "Model",
-                ["openrouter/free", "deepseek/deepseek-r1:free", "qwen/qwen3-coder:free",
-                 "meta-llama/llama-3.3-70b-instruct:free", "openai/gpt-oss-20b:free"],
-                help="openrouter/free (önerilen): her zaman çalışan ücretsiz modeli otomatik seçer "
-                     "(model adı eskimez). Diğerleri belirli ücretsiz modeller. Çalışmayan olursa "
-                     "openrouter/free seçin — en güvenilirdir."
+                model_options,
+                help="Auto Select Free (önerilen): her zaman çalışan ücretsiz modeli otomatik seçer (model adı eskimez). "
+                     "Diğerleri belirli ücretsiz modeller. Çalışmayan olursa Auto Select seçin — en güvenilirdir."
             )
+            model = model_ids[model_options.index(selected)]
+            
             with st.expander("ℹ️ Neden OpenRouter?"):
                 st.markdown(
                     "OpenRouter tek anahtarla onlarca modele erişim verir ve **ücretsiz** modeller içerir "
-                    "(kredi kartı gerekmez). **openrouter/free** seçeneği, o an çalışan bir ücretsiz modeli "
+                    "(kredi kartı gerekmez). **Auto Select Free** seçeneği, o an çalışan bir ücretsiz modeli "
                     "otomatik seçer — model adları haftalık değiştiği için en güvenilir seçenek budur. "
                     "Ücretsiz katman: ~20 istek/dakika, ~50-200 istek/gün. "
                     "Belirli bir model 404 verirse, güncel listeyi openrouter.ai/models adresinden kontrol edin."
@@ -2793,8 +2807,18 @@ def main():
             if not GEMINI_SDK_OK:
                 st.error("✗ google-genai kurulu değil")
                 st.code("pip install google-genai")
-            model = st.selectbox("Model", ["gemini-3.1-flash-lite", "gemini-3.5-flash"],
-                                 help="Flash-Lite: daha yüksek günlük limit, MSDS özetleme için yeterli. Flash: daha kaliteli ama düşük limit.")
+            model_options = [
+                "⚡ Flash-Lite (önerilen) — yüksek limit, MSDS için yeterli",
+                "✨ Flash — daha kaliteli ama düşük limit"
+            ]
+            model_ids = ["gemini-3.1-flash-lite", "gemini-3.5-flash"]
+            selected = st.selectbox(
+                "Model",
+                model_options,
+                help="Flash-Lite: daha yüksek günlük limit, MSDS özetleme için yeterli. Flash: daha kaliteli ama düşük limit."
+            )
+            model = model_ids[model_options.index(selected)]
+            
             with st.expander("ℹ️ Gemini ücretsiz limit — ÖNEMLİ"):
                 st.markdown(
                     "Gemini ücretsiz katman sınırı hesaba göre çok düşük olabilir (bazı hesaplarda günde "
