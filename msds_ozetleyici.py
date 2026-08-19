@@ -2893,55 +2893,58 @@ def main():
     st.title("⚗️ MSDS / SDS Özetleyici")
     st.caption("Türkçe · GHS + ADR Bölüm 14 · Yerel veya Online AI")
 
-    # ─── KURUMSAL ŞABLON (Ana Sayfa - Tek Satırda - Ultra Kompakt) ───
+    # ─── KURUMSAL ŞABLON (Ana Sayfa - Tek Satır, Hizalı) ───
     st.divider()
-    
-    # CSS ile satır yüksekliğini %75 + %50 daha küçült (toplam ~88% azalış)
+
+    # Tüm alanlar aynı yükseklikte ve hizada dursun diye kompakt CSS.
+    # file_uploader doğası gereği yüksek olduğu için popover içine alındı;
+    # popover butonu text_input ile aynı yüksekliğe çekiliyor.
     st.markdown("""
     <style>
-    [data-testid="column"] {
-        gap: 0.1rem !important;
+    div[data-testid="stHorizontalBlock"] div[data-testid="column"] {
+        gap: 0.15rem !important;
     }
-    div[data-baseweb="input"] {
-        padding: 0 !important;
-        margin: 0 !important;
-    }
-    input, [data-baseweb="select"] {
-        font-size: 0.75rem !important;
-        padding: 0.1rem 0.15rem !important;
-        height: 1.4rem !important;
+    div[data-testid="stHorizontalBlock"] input {
+        font-size: 0.8rem !important;
+        padding: 0.15rem 0.4rem !important;
+        height: 2.1rem !important;
         line-height: 1 !important;
-        margin: 0 !important;
     }
-    label {
-        font-size: 0.7rem !important;
-        margin: 0 !important;
-        padding: 0 !important;
+    div[data-testid="stHorizontalBlock"] button[data-testid="stPopoverButton"] {
+        height: 2.1rem !important;
+        min-height: 2.1rem !important;
+        padding: 0 0.6rem !important;
+        font-size: 0.8rem !important;
+        width: 100% !important;
+    }
+    div[data-testid="stHorizontalBlock"] div[data-testid="stColorPickerBlock"] > div,
+    div[data-testid="stHorizontalBlock"] div[data-testid="stColorPicker"] > div {
+        height: 2.1rem !important;
+    }
+    div[data-testid="stHorizontalBlock"] [data-testid="stWidgetLabel"] {
         display: none !important;
-    }
-    [data-testid="stSubheader"] {
-        margin: 0.1rem 0 0.2rem 0 !important;
-        padding: 0 !important;
-        font-size: 1rem !important;
-    }
-    [data-testid="stDivider"] {
-        margin: 0.2rem 0 !important;
     }
     </style>
     """, unsafe_allow_html=True)
-    
-    st.subheader("🏢 Kurumsal Şablon")
-    
-    col1, col2, col3, col4 = st.columns(4, gap="small")
+
+    st.markdown("##### 🏢 Kurumsal Şablon")
+
+    col1, col2, col3, col4 = st.columns([3, 3, 2, 1], gap="small")
     with col1:
-        co_name = st.text_input("Firma adı", placeholder="Kimya A.Ş.", label_visibility="collapsed")
+        co_name = st.text_input("Firma adı", placeholder="Firma adı — Kimya A.Ş.",
+                                label_visibility="collapsed")
     with col2:
-        co_dept = st.text_input("Birim", placeholder="İSG / Kalite", label_visibility="collapsed")
+        co_dept = st.text_input("Birim", placeholder="Birim — İSG / Kalite",
+                                label_visibility="collapsed")
     with col3:
-        co_logo = st.file_uploader("Logo", type=["png", "jpg", "jpeg", "svg"], label_visibility="collapsed")
+        _logo_label = "🖼️ Logo ✓" if st.session_state.get("co_logo_file") else "🖼️ Logo Yükle"
+        with st.popover(_logo_label, use_container_width=True):
+            co_logo = st.file_uploader("Logo dosyası (PNG / JPG / SVG)",
+                                       type=["png", "jpg", "jpeg", "svg"],
+                                       key="co_logo_file")
     with col4:
-        co_color = st.color_picker("Renk", "#1a237e", label_visibility="collapsed")
-    
+        co_color = st.color_picker("Tema rengi", "#1a237e", label_visibility="collapsed")
+
     st.divider()
 
     company = {"name": co_name, "dept": co_dept, "color": co_color, "logo": None}
