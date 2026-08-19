@@ -2889,21 +2889,46 @@ def main():
 
         st.caption("⚗️ MSDS Özetleyici v1.5\nGroq + Nvidia NIM + Gemini + OpenAI + Claude + Ollama + Kural Tabanlı · Otomatik yedekleme")
 
-    # ─── KURUMSAL ŞABLON (Ana Sayfa - Tek Satırda) ───
+    # ─── KURUMSAL ŞABLON (Ana Sayfa - Tek Satırda - Kompakt) ───
     st.divider()
+    
+    # CSS ile satır yüksekliğini %75 küçült (padding, margin, spacing azalt)
+    st.markdown("""
+    <style>
+    [data-testid="column"] {
+        gap: 0.25rem !important;
+    }
+    div[data-baseweb="input"] {
+        padding: 0.1rem 0.2rem !important;
+    }
+    input, [data-baseweb="select"] {
+        font-size: 0.85rem !important;
+        padding: 0.25rem !important;
+        height: 1.8rem !important;
+        line-height: 1 !important;
+    }
+    label {
+        font-size: 0.8rem !important;
+        margin-bottom: 0.15rem !important;
+        padding: 0 !important;
+    }
+    [data-testid="stSubheader"] {
+        margin-bottom: 0.5rem !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
     st.subheader("🏢 Kurumsal Şablon")
     
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4 = st.columns(4, gap="small")
     with col1:
-        co_name = st.text_input("Firma adı", placeholder="Kimya A.Ş.")
+        co_name = st.text_input("Firma adı", placeholder="Kimya A.Ş.", label_visibility="collapsed")
     with col2:
-        co_dept = st.text_input("Birim", placeholder="İSG / Kalite")
+        co_dept = st.text_input("Birim", placeholder="İSG / Kalite", label_visibility="collapsed")
     with col3:
-        co_logo = st.file_uploader("Logo (PNG/JPG/SVG)", type=["png", "jpg", "jpeg", "svg"], label_visibility="collapsed")
-        st.caption("Logo")
+        co_logo = st.file_uploader("Logo", type=["png", "jpg", "jpeg", "svg"], label_visibility="collapsed")
     with col4:
-        co_color = st.color_picker("Tema rengi", "#1a237e", label_visibility="collapsed")
-        st.caption("Renk")
+        co_color = st.color_picker("Renk", "#1a237e", label_visibility="collapsed")
     
     st.divider()
 
