@@ -2764,7 +2764,6 @@ def main():
         elif engine == "openai":
             model = st.selectbox("Model", ["gpt-4o-mini", "gpt-4o"],
                                  help="gpt-4o-mini: ucuz ve yeterli. gpt-4o: daha kaliteli, pahalı.")
-            st.warning("⚠️ OpenAI **ücretlidir** (ücretsiz katman yok). Düşük maliyet için gpt-4o-mini önerilir.")
 
         elif engine == "claude":
             model = st.selectbox("Model", ["claude-haiku-4-5-20251001", "claude-sonnet-5"],
