@@ -2887,21 +2887,25 @@ def main():
         openai_api_key = st.session_state.get("api_key_openai", "") or ""
         claude_api_key = st.session_state.get("api_key_claude", "") or ""
 
-        st.divider()
-        st.subheader("🏢 Kurumsal Şablon")
-        co_name  = st.text_input("Firma adı",  placeholder="Kimya A.Ş.")
-        co_dept  = st.text_input("Birim",       placeholder="İSG / Kalite")
-        co_logo  = st.file_uploader("Logo (PNG/JPG/SVG)", type=["png", "jpg", "jpeg", "svg"])
-        co_color = st.color_picker("Tema rengi", "#1a237e")
-
-        st.divider()
-        # ai_cache_lib DEVRE DIŞI — UI'daki "🗄️ Önbellek (Token Tasarrufu)"
-        # bölümü kaldırıldı çünkü aktif olduğunda hatalar üretiyordu. Yeniden
-        # aktifleştirmek için: ana script başındaki import guard'ı kaldır +
-        # analyze_with_fallback içindeki cached_call sarmalayıcısını geri getir,
-        # ve buraya cache_stats/clear_cache UI'ını geri koy.
-
         st.caption("⚗️ MSDS Özetleyici v1.5\nGroq + Nvidia NIM + Gemini + OpenAI + Claude + Ollama + Kural Tabanlı · Otomatik yedekleme")
+
+    # ─── KURUMSAL ŞABLON (Ana Sayfa - Tek Satırda) ───
+    st.divider()
+    st.subheader("🏢 Kurumsal Şablon")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        co_name = st.text_input("Firma adı", placeholder="Kimya A.Ş.")
+    with col2:
+        co_dept = st.text_input("Birim", placeholder="İSG / Kalite")
+    with col3:
+        co_logo = st.file_uploader("Logo (PNG/JPG/SVG)", type=["png", "jpg", "jpeg", "svg"], label_visibility="collapsed")
+        st.caption("Logo")
+    with col4:
+        co_color = st.color_picker("Tema rengi", "#1a237e", label_visibility="collapsed")
+        st.caption("Renk")
+    
+    st.divider()
 
     company = {"name": co_name, "dept": co_dept, "color": co_color, "logo": None}
     if co_logo:
