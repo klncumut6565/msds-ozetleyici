@@ -2890,13 +2890,14 @@ def main():
         st.caption("⚗️ MSDS Özetleyici v1.5\nGroq + Nvidia NIM + Gemini + OpenAI + Claude + Ollama + Kural Tabanlı · Otomatik yedekleme")
 
     # ─── ANA SAYFA ÜST ALANI (kompakt) ───
-    # Streamlit'in varsayılan üst boşluğu ve blok araları küçültülüyor;
-    # başlık + kurumsal şablon + sekmeler birbirine yakın dursun.
+    # Başlık sayfanın SOL kenarında dikey (yukarıdan aşağıya) durur; böylece
+    # üstte hiç yatay yer kaplamaz ve içerik en tepeden başlar.
     st.markdown("""
     <style>
     .block-container {
-        padding-top: 1.2rem !important;
+        padding-top: 1rem !important;
         padding-bottom: 1rem !important;
+        padding-left: 3.6rem !important;
     }
     .block-container div[data-testid="stVerticalBlock"] {
         gap: 0.35rem !important;
@@ -2904,17 +2905,35 @@ def main():
     hr {
         margin: 0.35rem 0 !important;
     }
-    .msds-title {
-        font-size: 1.5rem;
-        font-weight: 700;
-        line-height: 1.2;
-        margin: 0;
+    /* Sol kenarda dikey başlık şeridi */
+    .msds-vtitle {
+        position: fixed;
+        top: 4.2rem;
+        left: 0.35rem;
+        z-index: 10;
+        writing-mode: vertical-rl;
+        text-orientation: mixed;
+        transform: rotate(180deg);
+        display: flex;
+        align-items: center;
+        gap: 0.7rem;
+        pointer-events: none;
+        user-select: none;
     }
-    .msds-sub {
-        font-size: 0.78rem;
-        opacity: 0.65;
-        line-height: 1.2;
-        margin: 0 0 0.1rem 0;
+    .msds-vtitle .t {
+        font-size: 1.35rem;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        line-height: 1;
+    }
+    .msds-vtitle .s {
+        font-size: 0.72rem;
+        opacity: 0.6;
+        line-height: 1;
+    }
+    @media (max-width: 900px) {
+        .msds-vtitle { display: none; }
+        .block-container { padding-left: 1rem !important; }
     }
     .msds-row-label {
         font-size: 0.8rem;
@@ -2946,13 +2965,11 @@ def main():
         display: none !important;
     }
     </style>
+    <div class="msds-vtitle">
+        <span class="t">⚗️ MSDS / SDS Özetleyici</span>
+        <span class="s">Türkçe · GHS + ADR Bölüm 14</span>
+    </div>
     """, unsafe_allow_html=True)
-
-    st.markdown(
-        '<div class="msds-title">⚗️ MSDS / SDS Özetleyici</div>'
-        '<div class="msds-sub">Türkçe · GHS + ADR Bölüm 14 · Yerel veya Online AI</div>',
-        unsafe_allow_html=True
-    )
 
     # Kurumsal şablon: etiket de aynı satırda, ayrı başlık satırı yok
     c_lbl, col1, col2, col3, col4 = st.columns([1.6, 3, 3, 2, 1], gap="small")
