@@ -866,10 +866,13 @@ MODEL_FALLBACKS = {
     # Groq: llama-3.3-70b ve llama-3.1-8b 17 Haziran 2026'da kullanımdan
     # kaldırıldı; Groq'un resmi önerdiği halefler:
     "groq": ["openai/gpt-oss-120b", "openai/gpt-oss-20b"],
-    # Nvidia NIM: 80+ ücretsiz model, build.nvidia.com/models'tan
-    # Fallback zinciri: R1 (akıl) → Llama (hızlı) → Qwen (türkçe) → Mistral (dengeli)
-    "nvidia_nim": ["deepseek/deepseek-r1", "meta-llama/llama-3.3-70b-instruct", 
-                   "qwen/qwen-2.5-72b-instruct", "mistral/mistral-large"],
+    # Nvidia NIM: build.nvidia.com'daki modeller. DİKKAT — model ID'leri
+    # yayıncı/namespace biçiminde: 'deepseek-ai/...', 'meta/...' (HuggingFace
+    # biçimi 'deepseek/...' veya 'meta-llama/...' DEĞİL). Yanlış ID 404 döner
+    # ve motor kullanılamaz sanılıp zincir kural tabanlıya kadar düşer.
+    "nvidia_nim": ["deepseek-ai/deepseek-r1",
+                   "meta/llama-3.3-70b-instruct",
+                   "deepseek-ai/deepseek-r1-0528"],
     "gemini": ["gemini-3.1-flash-lite", "gemini-3.5-flash"],
     "openrouter": ["openrouter/free", "deepseek/deepseek-r1:free",
                    "meta-llama/llama-3.3-70b-instruct:free"],
@@ -961,9 +964,12 @@ def _bolum1_alan_kes(deger):
 # Ürün adı satırına PDF tablo düzleşmesiyle sızabilen SONRAKİ alan başlıkları.
 # Örn. tek satıra inen bir tablo satırı:
 #   "Ürün adı : ASETON CAS No : 67-64-1 Revizyon tarihi : 12.03.2024"
-# Bu desen "CAS No", "Revizyon tarihi" gibi bir sonraki alanın başladığı yeri bulur.
-_URUN_SONRAKI_ALAN = re.compile(
-    r"(?i)\s+(?:"
+# Aşağıdaki gövde iki yerde kullanılıyor:
+#   _URUN_SONRAKI_ALAN  → satır İÇİNDE sızıntı arar (değeri orada keser)
+#   _ALAN_BASLIGI_BASI  → bir adayın BAŞINDA alan başlığı var mı diye bakar
+#                         (alt satırdan yanlışlıkla başka bir alanı toplamayı önler)
+_SONRAKI_ALAN_GOVDE = (
+    r"(?:"
     r"cas(?:[\s\-]*(?:no|numarası|number))?|"
     r"ec(?:[\s\-]*(?:no|numarası|number))|einecs|elincs|"
     r"reach(?:[\s\-]*(?:kayıt|registration))?(?:[\s\-]*no)?|"
@@ -973,10 +979,28 @@ _URUN_SONRAKI_ALAN = re.compile(
     r"revision(?:\s*(?:date|number|no))?|print\s*date|version|sürüm|versiyon|"
     r"ürün\s*(?:kodu|no|numarası)|product\s*(?:code|number)|madde\s*no|"
     r"molekül\s*(?:formülü|ağırlığı)|kimyasal\s*formül|molecular\s*(?:formula|weight)|"
-    r"sds\s*no|msds\s*no|belge\s*no|doküman\s*no|"
+    r"sds\s*no|msds\s*no|gbf\s*no|belge\s*no|doküman\s*no|"
     r"tedarikçi|üretici|firma|şirket|supplier|manufacturer|company|"
     r"kullanım\s*alan|maddenin\s*kullanım|identified\s*use|relevant\s*identified"
-    r")\b\s*[:.\-–]?"
+    r")"
+)
+
+_URUN_SONRAKI_ALAN = re.compile(r"(?i)\s+" + _SONRAKI_ALAN_GOVDE + r"\b\s*[:.\-–]?")
+
+# Bir aday değerin BAŞINDA başka bir alanın başlığı duruyorsa, o aday değer
+# değil komşu alandır. Örn. 'Ürün Adı' satırının hemen altındaki
+# 'Ürün Numarası 1037' satırı — ürün adı değil, sıradaki alandır.
+_ALAN_BASLIGI_BASI = re.compile(r"(?i)^" + _SONRAKI_ALAN_GOVDE + r"\b")
+
+# Tümü büyük harf bir değer, aslında bölüm başlığının DEVAMI olabilir:
+#   'ÜRÜN ADI VE FİRMA BİLGİLERİ' → anahtardan sonra 'VE FİRMA BİLGİLERİ' kalır.
+# Bu bağlaç/başlık sözcükleriyle başlayan büyük-harf adaylar değer sayılmaz.
+# NOT: (?i) yalnızca desenin EN BAŞINDA olabilir. Daha önce ikinci alternatifin
+# önünde de (?i) vardı; Python 3.11+ bunu re.error yapıyor ve modül hiç
+# import edilemiyordu (3.10'da yalnızca DeprecationWarning'di).
+_BASLIK_DEVAMI_BASI = re.compile(
+    r"(?i)^(?:ve|veya|ile|and|or|of)\b|"
+    r"\b(?:bilgiler|bilgisi|tanımlama|tanımlanması|kimliği|hakkında)\b"
 )
 
 
@@ -1057,7 +1081,19 @@ def _satir_degeri(blok: str, anahtarlar, n=160):
             # 'UYGUN SÖNDÜRÜCÜ MADDELER' gibi tümü-büyük başlık satırlarının kendisini
             # değer sanma — AMA rakam/tire/nokta içeren büyük değerleri (TEXSOFIX P-DX,
             # UN 1830) koru. Yalnızca yalın büyük-harf öbekleri elenir.
-            if not (re.fullmatch(r"[A-ZÇĞİÖŞÜ]{4,}(?:\s+[A-ZÇĞİÖŞÜ]{2,}){0,3}", aday2)):
+            #
+            # ÖNEMLİ: Bu filtre eskiden TÜM yalın büyük-harf öbeklerini eliyordu ve
+            # bu yüzden 'KRMYZME NTR' gibi MEŞRU büyük harfli ürün adları da düşüyordu
+            # (sonra alt satırdaki 'Ürün Numarası 1037' değer sanılıyordu). Artık
+            # yalnızca içinde gerçek bir BAŞLIK sözcüğü geçen büyük-harf öbekleri
+            # eleniyor; marka/ürün adları korunuyor.
+            _yalin_buyuk = re.fullmatch(r"[A-ZÇĞİÖŞÜ]{4,}(?:\s+[A-ZÇĞİÖŞÜ]{2,}){0,3}", aday2)
+            _baslik_sozcugu = re.search(
+                r"(?i)\b(?:madde|maddeler|önlem|önlemler|bilgi|bilgiler|bilgisi|"
+                r"tanımlama|tanımlanması|kimliği|hakkında|uygun|gerekli|"
+                r"korunma|koruma|tedbir|tedbirler|yöntem|yöntemler|"
+                r"özellik|özellikler|karışım|sınıflandırma)\b", aday2)
+            if not (_yalin_buyuk and _baslik_sozcugu):
                 adaylar.append(aday2)
         # 2b) tablo satırı: değer KÜÇÜK harfle başlıyor ama kısa ve aynı satırda
         #     ('Fiziksel Durumu sıvı' gibi) — uzun cümleleri dışlamak için sıkı sınırlar
@@ -1069,12 +1105,22 @@ def _satir_degeri(blok: str, anahtarlar, n=160):
                 adaylar.append(aday2b)
         m = re.search(rf"(?im)^([^\n]{{0,60}}?{a}([^\n]{{0,40}}))\n[ \t]*([^\n]{{3,}})", blok)
         if m:
+            aday3 = None
             if _veri_yokla_bitiyor(m.group(2)) or _veri_yokla_bitiyor(m.group(3)):
                 # Anahtar satırı VEYA alttaki satır 'mevcut değil' vb. ile bitiyor →
                 # sentinel ekle ki aday döngüsü bu anahtarı kapatıp SIRADAKİNE geçsin
                 adaylar.append("veri yok")
             elif not _baslik_mi(m.group(3)) and ":" not in m.group(3)[:25]:
                 aday3 = m.group(3).strip()
+                # Alt satır BAŞKA BİR ALANIN başlığıysa (örn. 'Ürün Adı' satırının
+                # altındaki 'Ürün Numarası 1037'), bu bir değer değil komşu alandır.
+                # _ALAN_BASLIGI_BASI ve _BASLIK_DEVAMI_BASI bu iş için tanımlanmıştı
+                # ama hiçbir yerde ÇAĞRILMIYORDU; bu yüzden koruma etkisizdi.
+                if _ALAN_BASLIGI_BASI.match(aday3) or _BASLIK_DEVAMI_BASI.match(aday3):
+                    aday3 = None
+            else:
+                aday3 = None
+            if aday3:
                 # PDF tablo hücresi sarması: değerin başı anahtar satırının ÜSTÜNE,
                 # devamı ALTINA düşmüş olabilir ('Organik solventte / Çözünürlük / çözünür').
                 # Alt satır küçük harfle başlıyorsa (devam işareti) üstteki satırla birleştir.
@@ -1660,9 +1706,9 @@ def call_groq(text: str, api_key: str, model: str = "openai/gpt-oss-120b", max_r
                                   prompt_template=prompt_template)
 
 
-def call_nvidia_nim(text: str, api_key: str, model: str = "deepseek/deepseek-r1", max_retries: int = 5,
+def call_nvidia_nim(text: str, api_key: str, model: str = "deepseek-ai/deepseek-r1", max_retries: int = 5,
                     prompt_template: str = None) -> dict:
-    """Nvidia NIM API (OpenAI-uyumlu, 80+ ücretsiz model, build.nvidia.com/models).
+    """Nvidia NIM API (OpenAI-uyumlu, build.nvidia.com katalogu).
     Metin KIRPILMAZ — tam belge gönderilir. Groq'tan sonraki ücretsiz fallback seçeneği.
     Hız limiti: ~40 RPM (dakikalık istek). Model yedekleme (R1→Llama 3.3) 
     call_ai seviyesinde MODEL_FALLBACKS ile yapılır."""
@@ -1977,7 +2023,7 @@ def infer_pictograms_from_text(data: dict) -> list:
 # Her motor için: anahtar gerektirir mi, insan-okur etiket.
 ENGINE_LABELS = {
     "groq": "⚡ Groq",
-    "nvidia_nim": "🎮 Nvidia NIM (ücretsiz, 80+ model)",
+    "nvidia_nim": "🎮 Nvidia NIM",
     "gemini": "☁️ Gemini",
     "openrouter": "🌐 OpenRouter",
     "openai": "🤖 OpenAI",
@@ -2636,7 +2682,7 @@ def main():
             "⚡ Groq — çok hızlı, yüksek ücretsiz limit",
             "☁️ Gemini — Google, ücretsiz",
             "🌐 OpenRouter — uzun belgeler için, ücretsiz modeller",
-            "🎮 Nvidia NIM — 80+ ücretsiz model, ~40 RPM",
+            "🎮 Nvidia NIM — DeepSeek/Llama, kredi bazlı, ~40 RPM",
             "📐 Kural Tabanlı — AI'sız, anahtar/kota YOK, sınırsız",
         ]
         free_keys = ["groq", "gemini", "openrouter", "nvidia_nim", "kural"]
@@ -2714,31 +2760,35 @@ def main():
             model_options = [
                 "🧠 DeepSeek R1 (önerilen) — güçlü akıl yürütme",
                 "🦙 Llama 3.3 70B — hızlı ve güvenilir",
-                "🟧 Qwen 2.5 72B — türkçe iyisi",
-                "🎯 Mistral Large — dengeli"
+                "🧠 DeepSeek R1-0528 — R1'in geliştirilmiş sürümü",
             ]
+            # DIKKAT: NIM model ID'leri yayıncı/namespace biçimindedir
+            # ('deepseek-ai/...', 'meta/...'). HuggingFace biçimi ('deepseek/...',
+            # 'meta-llama/...') 404 verir ve motor çalışmaz sanılır.
             model_ids = [
-                "deepseek/deepseek-r1",
-                "meta-llama/llama-3.3-70b-instruct",
-                "qwen/qwen-2.5-72b-instruct",
-                "mistral/mistral-large"
+                "deepseek-ai/deepseek-r1",
+                "meta/llama-3.3-70b-instruct",
+                "deepseek-ai/deepseek-r1-0528",
             ]
             selected = st.selectbox(
-                "Model (Popüler 4 — tüm 80+ için link aşağıda)",
+                "Model",
                 model_options,
-                help="Bu 4 model en çok kullanılan. Nvidia NIM'de 80+ farklı model mevcut — "
-                     "tam katalog için build.nvidia.com/models adresine bakabilirsin."
+                help="Bu üç ID NVIDIA dokümanlarından doğrulanmıştır. Tam katalog için "
+                     "build.nvidia.com/models — oradaki 'View Code' penceresi her modelin "
+                     "tam ID'sini gösterir."
             )
             model = model_ids[model_options.index(selected)]
-            
+
             with st.expander("ℹ️ Neden Nvidia NIM?"):
                 st.markdown(
                     "**API anahtarı için:** [build.nvidia.com/settings/api-keys](https://build.nvidia.com/settings/api-keys) "
                     "(ücretsiz, e-posta ile kayıt — giriş yaptıktan sonra *Generate API Key*)\n\n"
-                    "Nvidia NIM ücretsiz katmanda 80+ modele erişim sağlar. "
-                    "DeepSeek, Qwen, Llama gibi frontier modellerine ücretsiz erişim. "
-                    "Kredi kartı gerekmez. Hız limiti: ~40 istek/dakika (dakikalık window). "
-                    "Groq'tan sonraki ideal fallback: benzer performans, daha geniş model seçimi."
+                    "Nvidia NIM, DeepSeek/Llama gibi büyük modellere OpenAI-uyumlu tek uçtan erişim verir. "
+                    "**Kredi sınırı vardır:** yeni hesap 1.000 çıkarım kredisiyle başlar, talep üzerine "
+                    "toplam 5.000'e çıkabilir — yani sınırsız değil, krediler tükenir. Ayrıca model başına "
+                    "~40 istek/dakika sınırı vardır ve büyük modeller (R1 671B) istek başına daha çok "
+                    "kredi harcar. Yüksek hacimli toplu işlem için **Groq** daha uygun; NIM'i kalite "
+                    "gereken dosyalarda veya yedek olarak kullan."
                 )
 
         elif engine == "openrouter":
@@ -2837,7 +2887,7 @@ def main():
                 "- ⚡ **Groq** (ücretsiz, kredi kartsız, en yüksek limit): [console.groq.com/keys](https://console.groq.com/keys)\n"
                 "- ☁️ **Gemini** (ücretsiz): [aistudio.google.com/apikey](https://aistudio.google.com/apikey)\n"
                 "- 🌐 **OpenRouter** (ücretsiz modeller, uzun belge, kredi kartsız): [openrouter.ai/keys](https://openrouter.ai/keys)\n"
-                "- 🎮 **Nvidia NIM** (ücretsiz, 80+ model, kredi kartsız): [build.nvidia.com/settings/api-keys](https://build.nvidia.com/settings/api-keys)\n"
+                "- 🎮 **Nvidia NIM** (kredi kartsız, 1.000 ücretsiz kredi ile başlar): [build.nvidia.com/settings/api-keys](https://build.nvidia.com/settings/api-keys)\n"
                 "- 🤖 **OpenAI** (ücretli): [platform.openai.com/api-keys](https://platform.openai.com/api-keys)\n"
                 "- 🧠 **Claude** (ücretli, **ön ödemeli kredi gerekir** — Claude Pro aboneliği API'yı KAPSAMAZ): [console.anthropic.com](https://console.anthropic.com/settings/keys)"
             )
@@ -2996,7 +3046,7 @@ def main():
     default_models = {
         "groq": "openai/gpt-oss-120b",
         "gemini": "gemini-3.1-flash-lite",
-        "nvidia_nim": "deepseek/deepseek-r1",
+        "nvidia_nim": "deepseek-ai/deepseek-r1",
         "openrouter": "openrouter/free",
         "openai": "gpt-4o-mini",
         "claude": "claude-haiku-4-5-20251001",
