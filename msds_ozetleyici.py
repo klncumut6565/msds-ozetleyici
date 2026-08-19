@@ -2836,24 +2836,25 @@ def main():
                 "**🔑 Ücretsiz/ücretli anahtar alma adresleri:**\n"
                 "- ⚡ **Groq** (ücretsiz, kredi kartsız, en yüksek limit): [console.groq.com/keys](https://console.groq.com/keys)\n"
                 "- ☁️ **Gemini** (ücretsiz): [aistudio.google.com/apikey](https://aistudio.google.com/apikey)\n"
-                "- 🎮 **Nvidia NIM** (ücretsiz, 80+ model, kredi kartsız): [build.nvidia.com/settings/api-keys](https://build.nvidia.com/settings/api-keys)\n"
                 "- 🌐 **OpenRouter** (ücretsiz modeller, uzun belge, kredi kartsız): [openrouter.ai/keys](https://openrouter.ai/keys)\n"
+                "- 🎮 **Nvidia NIM** (ücretsiz, 80+ model, kredi kartsız): [build.nvidia.com/settings/api-keys](https://build.nvidia.com/settings/api-keys)\n"
                 "- 🤖 **OpenAI** (ücretli): [platform.openai.com/api-keys](https://platform.openai.com/api-keys)\n"
                 "- 🧠 **Claude** (ücretli, **ön ödemeli kredi gerekir** — Claude Pro aboneliği API'yı KAPSAMAZ): [console.anthropic.com](https://console.anthropic.com/settings/keys)"
             )
             st.markdown("**Her motorun anahtarını kendi kutusuna girin** (boş bıraktıklarınız atlanır):")
 
             # Her motorun TEK ve KALICI kutusu — benzersiz key'ler sayesinde üst üste binmez.
-            # Seçili motorun anahtarı yukarıda zaten girildiyse, burada da aynı session değeri görünür.
+            # Sıra, sidebar'daki motor seçim listesiyle ve yukarıdaki link listesiyle aynı:
+            # groq → gemini → openrouter → nvidia_nim → openai → claude
             groq_fo = st.text_input("⚡ Groq anahtarı", type="password", placeholder="gsk_...",
                                     key="api_key_groq", help="Groq için. gsk_ ile başlar.")
-            nvidia_fo = st.text_input("🎮 Nvidia NIM anahtarı", type="password", placeholder="nvapi-...",
-                                      key="api_key_nvidia_nim",
-                                      help="Nvidia NIM için. build.nvidia.com/settings/api-keys adresinden alın. nvapi- ile başlar.")
             gemini_fo = st.text_input("☁️ Gemini anahtarı", type="password", placeholder="AIza...",
                                       key="api_key_gemini", help="Gemini için. AIza ile başlar.")
             openrouter_fo = st.text_input("🌐 OpenRouter anahtarı", type="password", placeholder="sk-or-...",
                                           key="api_key_openrouter", help="OpenRouter için. sk-or- ile başlar.")
+            nvidia_fo = st.text_input("🎮 Nvidia NIM anahtarı", type="password", placeholder="nvapi-...",
+                                      key="api_key_nvidia_nim",
+                                      help="Nvidia NIM için. build.nvidia.com/settings/api-keys adresinden alın. nvapi- ile başlar.")
             openai_fo = st.text_input("🤖 OpenAI anahtarı", type="password", placeholder="sk-...",
                                       key="api_key_openai", help="OpenAI için. sk- ile başlar.")
             claude_fo = st.text_input("🧠 Claude anahtarı", type="password", placeholder="sk-ant-...",
@@ -2862,9 +2863,9 @@ def main():
             # Hangi anahtarların girildiğini özetle (kullanıcı net görsün)
             girilenler = []
             if groq_fo: girilenler.append("⚡ Groq")
-            if nvidia_fo: girilenler.append("🎮 Nvidia NIM")
             if gemini_fo: girilenler.append("☁️ Gemini")
             if openrouter_fo: girilenler.append("🌐 OpenRouter")
+            if nvidia_fo: girilenler.append("🎮 Nvidia NIM")
             if openai_fo: girilenler.append("🤖 OpenAI")
             if claude_fo: girilenler.append("🧠 Claude")
             if girilenler:
@@ -2882,10 +2883,11 @@ def main():
 
         # Tüm anahtarlar session_state'ten okunur — HER KULLANICI KENDİ anahtarını girer.
         # (Anahtar diske/sunucuya yazılmaz, başka kullanıcıya geçmez, sadece bu oturumda yaşar.)
+        # Sıra yukarıdaki giriş kutularıyla aynı tutuluyor ki okuması kolay olsun.
         groq_api_key = st.session_state.get("api_key_groq", "") or ""
-        nvidia_api_key = st.session_state.get("api_key_nvidia_nim", "") or ""
         gemini_api_key = st.session_state.get("api_key_gemini", "") or ""
         openrouter_api_key = st.session_state.get("api_key_openrouter", "") or ""
+        nvidia_api_key = st.session_state.get("api_key_nvidia_nim", "") or ""
         openai_api_key = st.session_state.get("api_key_openai", "") or ""
         claude_api_key = st.session_state.get("api_key_claude", "") or ""
 
@@ -2964,9 +2966,9 @@ def main():
     # Motorların anahtar/erişim durumunu topla (failover için)
     engine_keys_map = {
         "groq": groq_api_key,
-        "nvidia_nim": nvidia_api_key,
         "gemini": gemini_api_key,
         "openrouter": openrouter_api_key,
+        "nvidia_nim": nvidia_api_key,
         "openai": openai_api_key,
         "claude": claude_api_key,
         "ollama": "local" if ollama_ok else "",
