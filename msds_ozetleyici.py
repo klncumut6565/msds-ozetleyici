@@ -2890,55 +2890,42 @@ def main():
         st.caption("⚗️ MSDS Özetleyici v1.5\nGroq + Nvidia NIM + Gemini + OpenAI + Claude + Ollama + Kural Tabanlı · Otomatik yedekleme")
 
     # ─── ANA SAYFA ÜST ALANI (kompakt) ───
-    # Başlık, içerik alanının SOL kenarında dikey durur. position:absolute +
-    # .block-container position:relative kullanılıyor: viewport'a değil içerik
-    # alanına göre konumlandığı için sidebar ile ÇAKIŞMAZ ve akıştan çıktığı
-    # için dikey yer kaplamaz.
+    # Başlık: arka fonlu ince yatay şerit. Belirgin ama tek satır olduğu için
+    # ayrı bir "başlık alanı" kaplamıyor. Altında kurumsal şablon tek satır.
     st.markdown("""
     <style>
     .block-container {
-        position: relative !important;
         padding-top: 1rem !important;
         padding-bottom: 1rem !important;
-        padding-left: 3.4rem !important;
     }
     .block-container div[data-testid="stVerticalBlock"] {
-        gap: 0.35rem !important;
+        gap: 0.4rem !important;
     }
     hr {
         margin: 0.35rem 0 !important;
     }
-    /* İçerik alanının sol kenarında dikey başlık şeridi */
-    .msds-vtitle {
-        position: absolute;
-        top: 1rem;
-        left: 0.2rem;
-        height: calc(100% - 2rem);
-        writing-mode: vertical-rl;
-        text-orientation: mixed;
-        transform: rotate(180deg);
+    /* Arka fonlu başlık şeridi */
+    .msds-banner {
         display: flex;
-        align-items: flex-end;
-        gap: 0.7rem;
-        pointer-events: none;
-        user-select: none;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 0.6rem;
+        background: linear-gradient(90deg, #1a237e 0%, #303f9f 60%, #3949ab 100%);
+        color: #fff;
+        border-radius: 8px;
+        padding: 0.45rem 0.9rem;
+        margin-bottom: 0.15rem;
     }
-    .msds-vtitle .t {
-        font-size: 1.3rem;
+    .msds-banner .t {
+        font-size: 1.15rem;
         font-weight: 700;
-        letter-spacing: 0.02em;
-        line-height: 1;
-        white-space: nowrap;
+        line-height: 1.2;
+        letter-spacing: 0.01em;
     }
-    .msds-vtitle .s {
-        font-size: 0.72rem;
-        opacity: 0.6;
-        line-height: 1;
-        white-space: nowrap;
-    }
-    @media (max-width: 900px) {
-        .msds-vtitle { display: none; }
-        .block-container { padding-left: 1rem !important; }
+    .msds-banner .s {
+        font-size: 0.75rem;
+        opacity: 0.85;
+        line-height: 1.2;
     }
     div[data-testid="stHorizontalBlock"] div[data-testid="column"] {
         gap: 0.15rem !important;
@@ -2964,9 +2951,9 @@ def main():
         display: none !important;
     }
     </style>
-    <div class="msds-vtitle">
+    <div class="msds-banner">
         <span class="t">⚗️ MSDS / SDS Özetleyici</span>
-        <span class="s">Türkçe · GHS + ADR Bölüm 14</span>
+        <span class="s">Türkçe · GHS + ADR Bölüm 14 · Yerel veya Online AI</span>
     </div>
     """, unsafe_allow_html=True)
 
