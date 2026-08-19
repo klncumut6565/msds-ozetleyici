@@ -2701,16 +2701,13 @@ def main():
                 help="Groq API model ID'si 'openai/gpt-oss-*' formatında; bu Groq tarafından optimize edilmiş açık kaynak modelleri gösterir."
             )
             model = model_ids[model_options.index(selected_model)]
-            st.markdown('🔑 **Ücretsiz Groq anahtarı al** → [console.groq.com](https://console.groq.com/keys)')
-            st.caption("⚡ Groq anahtarını aşağıdaki **🔁 Otomatik yedekleme** bölümüne girin (kayıtlı kalır).")
             with st.expander("ℹ️ Neden Groq?"):
                 st.markdown(
                     "Groq ücretsiz katmanda **günlük binlerce istek** verir ve çok hızlıdır — "
                     "toplu işlem için en uygun seçenek. Kredi kartı gerekmez. "
                     "**Model:** GPT-OSS = Groq Open Source Siblings — Groq'un kendi optimize ettiği modeller (OpenAI ürünü DEĞİL). "
                     "Not: `llama-3.3-70b-versatile` ve `llama-3.1-8b-instant` modelleri 17 Haziran 2026'da "
-                    "kullanımdan kaldırıldı; artık `gpt-oss-120b` ve `gpt-oss-20b` kullanılıyor. "
-                    "Anahtar: [console.groq.com/keys](https://console.groq.com/keys)"
+                    "kullanımdan kaldırıldı; artık `gpt-oss-120b` ve `gpt-oss-20b` kullanılıyor."
                 )
 
         elif engine == "nvidia_nim":
@@ -2733,9 +2730,6 @@ def main():
                      "tümünü görmek için build.nvidia.com/models'ı ziyaret et."
             )
             model = model_ids[model_options.index(selected)]
-            
-            st.markdown('🔑 **Ücretsiz Nvidia API anahtarı** → [build.nvidia.com/models](https://build.nvidia.com/models)')
-            st.caption("🎮 NIM API anahtarını aşağıdaki **🔁 Otomatik yedekleme** bölümüne girin (kayıtlı kalır).")
             st.info("💡 **Tüm 80+ modeli görmek için** → [build.nvidia.com/models](https://build.nvidia.com/models) — "
                     "DeepSeek, Llama, Qwen, Mistral, Nemotron, GLM, Command, Jamba, vb.")
             
@@ -2746,8 +2740,7 @@ def main():
                     "[build.nvidia.com/models](https://build.nvidia.com/models) ziyaret et. "
                     "DeepSeek, Qwen, Llama gibi frontier modellerine ücretsiz erişim. "
                     "Kredi kartı gerekmez. Hız limiti: ~40 istek/dakika (dakikalık window). "
-                    "Groq'tan sonraki ideal fallback: benzer performans, daha geniş model seçimi. "
-                    "Anahtar: [build.nvidia.com/models](https://build.nvidia.com/models) (e-posta ile kayıt)"
+                    "Groq'tan sonraki ideal fallback: benzer performans, daha geniş model seçimi."
                 )
 
         elif engine == "openrouter":
@@ -2759,30 +2752,23 @@ def main():
                      "(model adı eskimez). Diğerleri belirli ücretsiz modeller. Çalışmayan olursa "
                      "openrouter/free seçin — en güvenilirdir."
             )
-            st.markdown('🔑 **Ücretsiz OpenRouter anahtarı** → [openrouter.ai/keys](https://openrouter.ai/keys)')
-            st.caption("🌐 OpenRouter anahtarını aşağıdaki **🔁 Otomatik yedekleme** bölümüne girin (kayıtlı kalır).")
             with st.expander("ℹ️ Neden OpenRouter?"):
                 st.markdown(
                     "OpenRouter tek anahtarla onlarca modele erişim verir ve **ücretsiz** modeller içerir "
                     "(kredi kartı gerekmez). **openrouter/free** seçeneği, o an çalışan bir ücretsiz modeli "
                     "otomatik seçer — model adları haftalık değiştiği için en güvenilir seçenek budur. "
-                    "Ücretsiz katman: ~20 istek/dakika, ~50-200 istek/gün. Anahtar: "
-                    "[openrouter.ai/keys](https://openrouter.ai/keys) (e-posta ile kayıt, kart yok). "
+                    "Ücretsiz katman: ~20 istek/dakika, ~50-200 istek/gün. "
                     "Belirli bir model 404 verirse, güncel listeyi openrouter.ai/models adresinden kontrol edin."
                 )
 
         elif engine == "openai":
             model = st.selectbox("Model", ["gpt-4o-mini", "gpt-4o"],
                                  help="gpt-4o-mini: ucuz ve yeterli. gpt-4o: daha kaliteli, pahalı.")
-            st.markdown('🔑 **OpenAI anahtarı** → [platform.openai.com](https://platform.openai.com/api-keys)')
-            st.caption("🤖 OpenAI anahtarını aşağıdaki **🔁 Otomatik yedekleme** bölümüne girin (kayıtlı kalır).")
-            st.caption("⚠️ OpenAI ücretlidir (ücretsiz katman yok). Düşük maliyet için gpt-4o-mini önerilir.")
+            st.warning("⚠️ OpenAI **ücretlidir** (ücretsiz katman yok). Düşük maliyet için gpt-4o-mini önerilir.")
 
         elif engine == "claude":
             model = st.selectbox("Model", ["claude-haiku-4-5-20251001", "claude-sonnet-5"],
                                  help="Haiku 4.5: hızlı ve ucuz, bu iş için yeterli. Sonnet 5: daha kaliteli, pahalı.")
-            st.markdown('🔑 **Claude (Anthropic) anahtarı** → [console.anthropic.com](https://console.anthropic.com/settings/keys)')
-            st.caption("🧠 Claude anahtarını aşağıdaki **🔁 Otomatik yedekleme** bölümüne girin (kayıtlı kalır).")
             st.warning(
                 "⚠️ **Önemli:** Claude **API** ayrı bir üründür — kullandıkça ödenir ve önceden "
                 "**kredi/bakiye yüklemek** gerekir (console.anthropic.com → Billing). "
@@ -2810,8 +2796,6 @@ def main():
                 st.code("pip install google-genai")
             model = st.selectbox("Model", ["gemini-3.1-flash-lite", "gemini-3.5-flash"],
                                  help="Flash-Lite: daha yüksek günlük limit, MSDS özetleme için yeterli. Flash: daha kaliteli ama düşük limit.")
-            st.markdown('🔑 **Ücretsiz Gemini anahtarı** → [aistudio.google.com/apikey](https://aistudio.google.com/apikey)')
-            st.caption("☁️ Gemini anahtarını aşağıdaki **🔁 Otomatik yedekleme** bölümüne girin (kayıtlı kalır).")
             with st.expander("ℹ️ Gemini ücretsiz limit — ÖNEMLİ"):
                 st.markdown(
                     "Gemini ücretsiz katman sınırı hesaba göre çok düşük olabilir (bazı hesaplarda günde "
