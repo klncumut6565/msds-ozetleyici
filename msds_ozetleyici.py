@@ -2635,11 +2635,11 @@ def main():
         free_options = [
             "⚡ Groq — çok hızlı, yüksek ücretsiz limit",
             "☁️ Gemini — Google, ücretsiz",
-            "🎮 Nvidia NIM — 80+ ücretsiz model, ~40 RPM",
             "🌐 OpenRouter — uzun belgeler için, ücretsiz modeller",
+            "🎮 Nvidia NIM — 80+ ücretsiz model, ~40 RPM",
             "📐 Kural Tabanlı — AI'sız, anahtar/kota YOK, sınırsız",
         ]
-        free_keys = ["groq", "gemini", "nvidia_nim", "openrouter", "kural"]
+        free_keys = ["groq", "gemini", "openrouter", "nvidia_nim", "kural"]
         
         engine_label = st.radio("Motor seç", free_options, index=0, label_visibility="collapsed")
         engine = free_keys[free_options.index(engine_label)]
