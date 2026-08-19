@@ -2889,18 +2889,39 @@ def main():
 
         st.caption("⚗️ MSDS Özetleyici v1.5\nGroq + Nvidia NIM + Gemini + OpenAI + Claude + Ollama + Kural Tabanlı · Otomatik yedekleme")
 
-    # ─── BAŞLIK (Ana Sayfa - En Üst) ───
-    st.title("⚗️ MSDS / SDS Özetleyici")
-    st.caption("Türkçe · GHS + ADR Bölüm 14 · Yerel veya Online AI")
-
-    # ─── KURUMSAL ŞABLON (Ana Sayfa - Tek Satır, Hizalı) ───
-    st.divider()
-
-    # Tüm alanlar aynı yükseklikte ve hizada dursun diye kompakt CSS.
-    # file_uploader doğası gereği yüksek olduğu için popover içine alındı;
-    # popover butonu text_input ile aynı yüksekliğe çekiliyor.
+    # ─── ANA SAYFA ÜST ALANI (kompakt) ───
+    # Streamlit'in varsayılan üst boşluğu ve blok araları küçültülüyor;
+    # başlık + kurumsal şablon + sekmeler birbirine yakın dursun.
     st.markdown("""
     <style>
+    .block-container {
+        padding-top: 1.2rem !important;
+        padding-bottom: 1rem !important;
+    }
+    .block-container div[data-testid="stVerticalBlock"] {
+        gap: 0.35rem !important;
+    }
+    hr {
+        margin: 0.35rem 0 !important;
+    }
+    .msds-title {
+        font-size: 1.5rem;
+        font-weight: 700;
+        line-height: 1.2;
+        margin: 0;
+    }
+    .msds-sub {
+        font-size: 0.78rem;
+        opacity: 0.65;
+        line-height: 1.2;
+        margin: 0 0 0.1rem 0;
+    }
+    .msds-row-label {
+        font-size: 0.8rem;
+        font-weight: 600;
+        line-height: 2.1rem;
+        white-space: nowrap;
+    }
     div[data-testid="stHorizontalBlock"] div[data-testid="column"] {
         gap: 0.15rem !important;
     }
@@ -2927,9 +2948,16 @@ def main():
     </style>
     """, unsafe_allow_html=True)
 
-    st.markdown("##### 🏢 Kurumsal Şablon")
+    st.markdown(
+        '<div class="msds-title">⚗️ MSDS / SDS Özetleyici</div>'
+        '<div class="msds-sub">Türkçe · GHS + ADR Bölüm 14 · Yerel veya Online AI</div>',
+        unsafe_allow_html=True
+    )
 
-    col1, col2, col3, col4 = st.columns([3, 3, 2, 1], gap="small")
+    # Kurumsal şablon: etiket de aynı satırda, ayrı başlık satırı yok
+    c_lbl, col1, col2, col3, col4 = st.columns([1.6, 3, 3, 2, 1], gap="small")
+    with c_lbl:
+        st.markdown('<div class="msds-row-label">🏢 Şablon</div>', unsafe_allow_html=True)
     with col1:
         co_name = st.text_input("Firma adı", placeholder="Firma adı — Kimya A.Ş.",
                                 label_visibility="collapsed")
@@ -2944,8 +2972,6 @@ def main():
                                        key="co_logo_file")
     with col4:
         co_color = st.color_picker("Tema rengi", "#1a237e", label_visibility="collapsed")
-
-    st.divider()
 
     company = {"name": co_name, "dept": co_dept, "color": co_color, "logo": None}
     if co_logo:
