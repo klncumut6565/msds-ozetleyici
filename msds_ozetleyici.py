@@ -2628,21 +2628,32 @@ def main():
         st.subheader("🤖 Yapay Zeka Motoru")
 
         _local_ok, _ = check_ollama("http://localhost:11434")
-        engine_options = [
+        
+        # ─── ÜCRETSİZ MOTORLAR (ana seçim) ───
+        free_options = [
             "⚡ Groq — çok hızlı, yüksek ücretsiz limit",
-            "🎮 Nvidia NIM — 80+ ücretsiz model, ~40 RPM, build.nvidia.com/models",
             "☁️ Gemini — Google, ücretsiz",
+            "🎮 Nvidia NIM — 80+ ücretsiz model, ~40 RPM",
             "🌐 OpenRouter — uzun belgeler için, ücretsiz modeller",
-            "🤖 OpenAI — ücretli",
-            "🧠 Claude — en kaliteli, ücretli",
-            "🖥️ Ollama (yerel) — sınırsız, donanıma bağlı",
             "📐 Kural Tabanlı — AI'sız, anahtar/kota YOK, sınırsız",
         ]
-        engine_keys = ["groq", "nvidia_nim", "gemini", "openrouter", "openai", "claude", "ollama", "kural"]
-        default_idx = 5 if _local_ok else 0  # yerel varsa Ollama, yoksa Groq
-        engine_label = st.radio("Motor seç", engine_options, index=default_idx,
-                                label_visibility="collapsed")
-        engine = engine_keys[engine_options.index(engine_label)]
+        free_keys = ["groq", "gemini", "nvidia_nim", "openrouter", "kural"]
+        
+        engine_label = st.radio("Motor seç", free_options, index=0, label_visibility="collapsed")
+        engine = free_keys[free_options.index(engine_label)]
+        
+        # ─── ÜCRETLİ / YEREL MOTORLAR (gizli expander) ───
+        with st.expander("💰 Ücretli / 🖥️ Yerel Motorlar"):
+            premium_options = [
+                "🤖 OpenAI — ücretli",
+                "🧠 Claude — en kaliteli, ücretli",
+                "🖥️ Ollama (yerel) — sınırsız, donanıma bağlı",
+            ]
+            premium_keys = ["openai", "claude", "ollama"]
+            
+            premium_label = st.radio("", premium_options, label_visibility="collapsed", key="premium_motor")
+            if premium_label:
+                engine = premium_keys[premium_options.index(premium_label)]
 
         ollama_url = "http://localhost:11434"
         model = ""
@@ -2792,6 +2803,7 @@ def main():
                 "**🔑 Ücretsiz/ücretli anahtar alma adresleri:**\n"
                 "- ⚡ **Groq** (ücretsiz, kredi kartsız, en yüksek limit): [console.groq.com/keys](https://console.groq.com/keys)\n"
                 "- ☁️ **Gemini** (ücretsiz): [aistudio.google.com/apikey](https://aistudio.google.com/apikey)\n"
+                "- 🎮 **Nvidia NIM** (ücretsiz, 80+ model, kredi kartsız): [build.nvidia.com/models](https://build.nvidia.com/models)\n"
                 "- 🌐 **OpenRouter** (ücretsiz modeller, uzun belge, kredi kartsız): [openrouter.ai/keys](https://openrouter.ai/keys)\n"
                 "- 🤖 **OpenAI** (ücretli): [platform.openai.com/api-keys](https://platform.openai.com/api-keys)\n"
                 "- 🧠 **Claude** (ücretli, **ön ödemeli kredi gerekir** — Claude Pro aboneliği API'yı KAPSAMAZ): [console.anthropic.com](https://console.anthropic.com/settings/keys)"
