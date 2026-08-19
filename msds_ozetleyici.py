@@ -2643,7 +2643,8 @@ def main():
         engine = free_keys[free_options.index(engine_label)]
         
         # ─── ÜCRETLİ / YEREL MOTORLAR (gizli expander) ───
-        with st.expander("💰 Ücretli / 🖥️ Yerel Motorlar"):
+        use_premium = st.checkbox("💰 Ücretli/🖥️ Yerel Motorları Göster", value=False, key="show_premium")
+        if use_premium:
             premium_options = [
                 "🤖 OpenAI — ücretli",
                 "🧠 Claude — en kaliteli, ücretli",
@@ -2651,6 +2652,7 @@ def main():
             ]
             premium_keys = ["openai", "claude", "ollama"]
             
+            st.caption("⚠️ Ücretsiz motorlar (Groq, Gemini, NIM) kullanmanız önerilir.")
             premium_label = st.radio("", premium_options, label_visibility="collapsed", key="premium_motor")
             if premium_label:
                 engine = premium_keys[premium_options.index(premium_label)]
