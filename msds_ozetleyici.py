@@ -2499,6 +2499,12 @@ def analyze_with_failover(text, chain, models, keys, ollama_url, exhausted, on_s
                 return {"data": data, "used_eng": eng}
             except Exception as e:
                 last_err = e
+                msg_u = str(e).upper()
+                if "BELGE_COK_BUYUK" in msg_u or "PAYLOAD_TOO_LARGE" in msg_u:
+                    # Belge BU motora sığmadı (örn. Groq ücretsiz katman 8K TPM → 413).
+                    # Bu DOSYAYA özgü bir durum: motoru oturum boyunca kapatma,
+                    # sadece bu dosyada sıradakine geç. Küçük belgeler yine Groq'a gider.
+                    continue
                 if _is_daily_exhausted_error(e):
                     # Günlük kota doldu → bu motoru oturum boyunca atla
                     exhausted.add(eng)
