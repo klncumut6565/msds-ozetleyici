@@ -178,17 +178,67 @@ def normalize_summary(s: dict) -> dict:
     if isinstance(s.get("urun_adi"), str):
         s["urun_adi"] = _urun_adi_kes(s["urun_adi"])
 
-    # İç içe nesnelerdeki metin alanları
-    for grp in ["fiziksel_ozellikler", "saglik_tehlikeleri", "ilk_yardim", "yangin", "kkd"]:
+    # Liste alanları: AI bazen düz metin ("H314, H318"), sözlük listesi
+    # ([{"kod":"H314","metin":"..."}]) veya None öğeler döndürür → düz metin listesi.
+    def _liste(v, bol=r"[;\n]+"):
+        if v is None:
+            return []
+        if isinstance(v, str):
+            return [p.strip() for p in re.split(bol, v) if p.strip()]
+        if isinstance(v, dict):
+            v = [v]
+        if isinstance(v, (list, tuple)):
+            return [t for t in (flatten_text(x) for x in v) if t]
+        return [flatten_text(v)] if flatten_text(v) else []
+
+    s["h_ifadeleri"] = _liste(s.get("h_ifadeleri"))
+    s["p_ifadeleri"] = _liste(s.get("p_ifadeleri"))
+    # GHS: yalnızca "GHS01".."GHS09" kodlarını al (dict/metin/küçük harf gelse de)
+    ghs = []
+    for g in _liste(s.get("ghs_piktogramlari"), bol=r"[,;\s]+"):
+        for kod in re.findall(r"GHS\s*0?(\d)", g.upper()):
+            k = f"GHS0{kod}"
+            if k not in ghs:
+                ghs.append(k)
+    s["ghs_piktogramlari"] = ghs
+
+    # İç içe nesneler: SÖZLÜK olmalı. AI bazen tüm bloğu tek metin/liste döndürür
+    # (örn. "ilk_yardim": "Bol su ile yıkayın...") → kart .get() çağrısında çöküyordu.
+    yedek_anahtar = {"fiziksel_ozellikler": "gorunum", "saglik_tehlikeleri": "genel",
+                     "ilk_yardim": "genel", "yangin": "sondurme_araci", "kkd": "vucut"}
+    for grp, anahtar in yedek_anahtar.items():
         sub = s.get(grp)
         if isinstance(sub, dict):
             s[grp] = {k: (flatten_text(val) if not isinstance(val, str) else val)
                       for k, val in sub.items()}
-    # ADR Bölüm 14 metin alanları
+        elif sub in (None, "", [], {}):
+            s[grp] = {}
+        else:
+            metin = flatten_text(sub)
+            s[grp] = {anahtar: metin} if metin else {}
+
+    # ADR Bölüm 14: taşımaya tabi olmayan ürünlerde AI çoğu zaman sözlük yerine
+    # "Düzenleme yoktur" / "Tehlikeli madde değildir" gibi DÜZ METİN döndürür.
+    # Bu durumda kart adr.get(...) satırında AttributeError ile çöküyordu.
     adr = s.get("adr_bolum14")
-    if isinstance(adr, dict):
-        s["adr_bolum14"] = {k: (flatten_text(val) if not isinstance(val, (str, list)) else val)
-                            for k, val in adr.items()}
+    if isinstance(adr, list):
+        adr = next((x for x in adr if isinstance(x, dict)), flatten_text(adr))
+    if not isinstance(adr, dict):
+        metin = flatten_text(adr)
+        m_un = re.search(r"\bUN\s*(\d{4})\b", metin, re.I)
+        adr = {"un_numarasi": m_un.group(1)} if m_un else {}
+    adr = {k: (flatten_text(val) if not isinstance(val, (str, list)) else val)
+           for k, val in adr.items()}
+    # Ambalaj grubu liste gelirse ("['III']") düz metne indir
+    if isinstance(adr.get("ambalaj_grubu"), list):
+        adr["ambalaj_grubu"] = flatten_text(adr["ambalaj_grubu"])
+    # Etiketler her zaman metin listesi olmalı ("8", [8], "6.1+3" ...)
+    etk = adr.get("etiketler")
+    if isinstance(etk, str):
+        etk = [p.strip() for p in re.split(r"[+,/;]", etk) if p.strip()]
+    adr["etiketler"] = [t for t in (flatten_text(x) for x in (etk or [])) if t] \
+        if isinstance(etk, (list, tuple)) else []
+    s["adr_bolum14"] = adr
     return s
 
 def safe_filename(name: str, fallback: str = "MSDS_Ozet") -> str:
