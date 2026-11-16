@@ -1,3 +1,8 @@
 .ai_cache/
 __pycache__/
 *.pyc
+
+# graphify: sadece graph.json + GRAPH_REPORT.md commit edilir
+graphify-out/*
+!graphify-out/graph.json
+!graphify-out/GRAPH_REPORT.md
