@@ -585,7 +585,7 @@ def generate_html_card(s: dict, company: dict = None, fname: str = "") -> str:
 
     id_rows = ""
     for lbl, field, style in [
-        ("BM Numarası", "un_numarasi", "color:#4a148c;font-weight:700;font-size:10px;"),
+        ("UN (BM) Numarası", "un_numarasi", "color:#4a148c;font-weight:700;font-size:10px;"),
         ("ADR Sınıfı", "adr_sinifi", "color:#111;font-weight:500;"),
         ("Alt Tehlike", "alt_tehlike", "color:#111;font-weight:500;"),
     ]:
@@ -598,7 +598,7 @@ def generate_html_card(s: dict, company: dict = None, fname: str = "") -> str:
     if ok(adr.get("tunel_kodu")):
         id_rows += f'<div style="display:flex;gap:4px;font-size:9.5px;padding:2px 0;align-items:center;"><span style="color:#888;min-width:82px;">Tünel Kodu</span><span style="background:#311b92;color:#fff;font-weight:700;font-size:9px;padding:1px 8px;border-radius:2px;">{adr["tunel_kodu"]}</span></div>'
     if ok(adr.get("kemler_kodu")):
-        id_rows += f'<div style="display:flex;gap:4px;font-size:9.5px;padding:2px 0;"><span style="color:#888;min-width:82px;">Kemler Kodu</span><span style="color:#111;font-weight:500;">{adr["kemler_kodu"]}</span></div>'
+        id_rows += f'<div style="display:flex;gap:4px;font-size:9.5px;padding:2px 0;"><span style="color:#888;min-width:82px;">Tehlike Tanımlama Numarası</span><span style="color:#111;font-weight:500;">{adr["kemler_kodu"]}</span></div>'
 
     deniz_badge = f'<span style="font-size:8.5px;font-weight:500;padding:1px 8px;border-radius:2px;background:{"#b71c1c" if adr.get("deniz_kirletici")=="Evet" else "#1b5e20"};color:#fff;">{adr["deniz_kirletici"]}</span>' if ok(adr.get("deniz_kirletici")) else '<span style="font-size:9px;color:#bbb;">Belirtilmemiş</span>'
     sevkiyat = f'<div style="font-size:9.5px;color:#111;font-weight:500;line-height:1.5;margin-bottom:8px;">{adr["sevkiyat_adi"]}</div>' if ok(adr.get("sevkiyat_adi")) else '<div style="font-size:9px;color:#bbb;margin-bottom:8px;">Belirtilmemiş</div>'
@@ -625,7 +625,7 @@ def generate_html_card(s: dict, company: dict = None, fname: str = "") -> str:
         <div style="background:{plaka_bg};padding:4px;font-size:16px;font-weight:800;color:{plaka_yazi_rengi};letter-spacing:1px;border-bottom:2px solid #e65100;">{kemler_top}</div>
         <div style="background:{plaka_bg};padding:4px;font-size:14px;font-weight:800;color:{plaka_yazi_rengi};">{kemler_bot}</div>
       </div>
-      <div style="font-size:7.5px;color:#555;text-align:center;line-height:1.4;">Kemler<br>Plakası</div>
+      <div style="font-size:7.5px;color:#555;text-align:center;line-height:1.4;">Yazılı Turuncu<br>Plaka</div>
       {f'<div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:center;align-items:flex-start;margin-top:2px;">{etk_html}</div><div style="font-size:7.5px;color:#555;text-align:center;line-height:1.4;">Tehlike<br>Etiketleri</div>' if etk_html else ""}
     </div>
     <div style="padding:8px 10px;border-right:1px solid #e0e0e0;">
